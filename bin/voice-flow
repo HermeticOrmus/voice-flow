@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# voice-flow — Wispr Flow for Pop!_OS (COSMIC / Wayland).
+#
+# System-wide voice dictation. Reuses the whisper-paste engine
+# (record -> whisper.cpp -> hallucination filter -> optional LLM
+# rewrite) and injects the cleaned transcript into whatever window
+# currently has keyboard focus, via ydotool. So it works in any app
+# (browser, chat, editor, email) — not just inside OrmusTerm.
+#
+# A floating Wispr-style feedback pill (voice-flow-pill) shows a live
+# waveform while listening and a "thinking" sweep while transcribing.
+#
+# Bind to a global COSMIC shortcut (Super+Shift+V). First press starts
+# recording; second press stops, transcribes, and injects.
+#
+# WHY ydotool: on Wayland an app can't synthesize input into another
+# app's window. ydotool injects below the compositor via /dev/uinput
+# (an ACL grants this user access) — the legitimate path.
+#
+# Injection method (VOICE_FLOW_METHOD):
+#   auto (default) — text of <= VOICE_FLOW_TYPE_MAX chars (default 80)
+#                    is TYPED (works in terminals and GUIs alike);
+#                    longer text is CLIPBOARD-PASTED (Ctrl+V) for speed.
+#   type           — always simulate keystrokes (universal, slower).
+#   paste          — always clipboard + Ctrl+V (restores clipboard;
+#                    non-text clipboard contents are lost).
+#
+# Visual pill on/off:  VOICE_FLOW_PILL=0 disables it.
+# AI cleanup:  export VOICE_PASTE_REWRITE_COMMAND=voice-rewrite-ollama
+set -euo pipefail
+
+# A COSMIC-spawned process inherits the compositor's PATH, which may not
+# include ~/.local/bin where whisper-paste / voice-flow-pill live.
+export PATH="$HOME/.local/bin:$PATH"
+export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-/run/user/$(id -u)/.ydotool_socket}"
+
+# Persisted config (written by the voice-flow dashboard). Sourced here so
+# the COSMIC-spawned process — which inherits the compositor's env, not a
+# shell rc — still picks up the user's chosen method/model/rewrite/pill.
+# A var explicitly set in the real environment is preserved (the conf
+# only fills what's unset), so CLI/env overrides still win.
+CONF="${VOICE_FLOW_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice/voice-flow.conf}"
+if [ -f "$CONF" ]; then
+    # shellcheck disable=SC1090
+    . "$CONF"
+fi
+
+YDOTOOL="${YDOTOOL:-ydotool}"
+METHOD="${VOICE_FLOW_METHOD:-auto}"
+TYPE_MAX="${VOICE_FLOW_TYPE_MAX:-80}"
+PILL_ON="${VOICE_FLOW_PILL:-1}"
+
+# The pill conveys state visually, so silence the engine's notify-send
+# toasts in the system-wide path. Skipped automatically if the pill is
+# off, so you don't lose all feedback. Override with VOICE_PASTE_QUIET=0.
+if [ "$PILL_ON" = "1" ]; then
+    export VOICE_PASTE_QUIET="${VOICE_PASTE_QUIET:-1}"
+fi
+
+# AI cleanup (Wispr-style): route the engine's optional rewrite through
+# the local Ollama helper — strips filler, applies punctuation, keeps
+# technical terms + your vocabulary verbatim. Local + private. The
+# dashboard writes VOICE_FLOW_REWRITE=on|off; we translate to the engine's
+# command var here (gating off can't be done by emptying the var in conf —
+# the :- default would just refill it).
+if [ "${VOICE_FLOW_REWRITE:-on}" = "off" ]; then
+    export VOICE_PASTE_REWRITE_COMMAND=""
+else
+    export VOICE_PASTE_REWRITE_COMMAND="${VOICE_PASTE_REWRITE_COMMAND:-voice-rewrite-ollama}"
+fi
+
+# Accuracy: medium.en (already on disk) is a large step up from base.en
+# for English. For Spanish/multilingual, switch to a large-v3-turbo
+# model (multilingual) via VOICE_PASTE_MODEL.
+export VOICE_PASTE_MODEL="${VOICE_PASTE_MODEL:-medium.en}"
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/ormus-voice"
+REC_STATE="$STATE_DIR/recording.state"   # engine's recording flag
+PILL_STATE="$STATE_DIR/pill.state"       # pill display state
+mkdir -p "$STATE_DIR"
+
+pill_set() {  # $1 = listening|thinking|done|cancel|quit
+    [ "$PILL_ON" = "1" ] || return 0
+    printf '%s' "$1" > "$PILL_STATE"
+}
+pill_launch() {
+    [ "$PILL_ON" = "1" ] || return 0
+    pgrep -f 'voice-flow-pill' >/dev/null 2>&1 && return 0
+    setsid -f voice-flow-pill </dev/null >/dev/null 2>&1 || true
+}
+
+inject() {
+    local text="$1" method="$METHOD"
+    if [ "$method" = "auto" ]; then
+        if [ "${#text}" -le "$TYPE_MAX" ]; then method="type"; else method="paste"; fi
+    fi
+    case "$method" in
+      type)
+        printf '%s' "$text" | "$YDOTOOL" type --file - 2>/dev/null ;;
+      paste)
+        local saved; saved="$(wl-paste -n 2>/dev/null || true)"
+        printf '%s' "$text" | wl-copy
+        sleep 0.05
+        "$YDOTOOL" key ctrl+v 2>/dev/null
+        sleep 0.15
+        printf '%s' "$saved" | wl-copy 2>/dev/null || true ;;
+      *)
+        echo "voice-flow: unknown VOICE_FLOW_METHOD='$method'" >&2; exit 2 ;;
+    esac
+}
+
+resolve_method() {  # mirror inject()'s auto decision, for the history log
+    local text="$1" m="$METHOD"
+    if [ "$m" = "auto" ]; then
+        if [ "${#text}" -le "$TYPE_MAX" ]; then m="type"; else m="paste"; fi
+    fi
+    printf '%s' "$m"
+}
+
+# Stable key for the current window focus, via the COSMIC toplevel reader
+# (ormus-active-window). We compare the SORTED SET of all activated
+# toplevel ids — COSMIC can mark one activated per output, and the
+# helper's single-value mode returns whichever comes first in iteration
+# order (not stable across runs), so the set is the robust signal. Prints
+# empty if the helper is missing or nothing is activated — callers treat
+# empty as "unknown" and do NOT divert, so the interlock fails OPEN
+# (degrades to legacy inject) rather than ever wrongly blocking a paste.
+focus_id() {
+    command -v ormus-active-window >/dev/null 2>&1 || return 0
+    ormus-active-window --list 2>/dev/null \
+        | awk '/^\*/ { n=split($0, p, "id=\""); v=p[n]; sub(/".*/, "", v); print v }' \
+        | sort | tr '\n' ',' || true
+}
+
+# Rare-event toast for the divert case. Deliberately bypasses
+# VOICE_PASTE_QUIET: the pill can't say "press Ctrl+V", and the user
+# needs to know their words are waiting on the clipboard.
+note_divert() {
+    command -v notify-send >/dev/null 2>&1 || return 0
+    notify-send -a "Voice Flow" -t 6000 \
+        "Focus moved — transcript copied" \
+        "Press Ctrl+V to paste it where you want it." 2>/dev/null || true
+}
+
+# Append one privacy-respecting line per dictation — COUNTS ONLY, never
+# the transcript text — for the dashboard's stats. last-paste.txt already
+# holds the latest text; this rolling log is metadata, not content.
+HISTORY_LOG="${VOICE_FLOW_HISTORY_LOG:-${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/history.jsonl}"
+history_log() {  # $1=text $2=method $3=diverted(0|1) $4=start-epoch $5=end-epoch
+    local text="$1" method="$2" diverted="$3" t0="$4" t1="$5"
+    local words chars ms ts rewrite
+    words=$(printf '%s' "$text" | wc -w | tr -d ' ')
+    chars=${#text}
+    ms=$(awk -v a="$t0" -v b="$t1" 'BEGIN{d=(b-a)*1000; if(d<0)d=0; printf "%d", d}')
+    ts=$(date --iso-8601=seconds 2>/dev/null || date)
+    [ -n "${VOICE_PASTE_REWRITE_COMMAND:-}" ] && rewrite=true || rewrite=false
+    mkdir -p "$(dirname "$HISTORY_LOG")"
+    printf '{"ts":"%s","words":%s,"chars":%s,"model":"%s","method":"%s","rewrite":%s,"transcribe_ms":%s,"diverted":%s}\n' \
+        "$ts" "${words:-0}" "$chars" "$VOICE_PASTE_MODEL" "$method" "$rewrite" "${ms:-0}" "$diverted" \
+        >> "$HISTORY_LOG" 2>/dev/null || true
+}
+
+# Phase = whether a recording is already in flight (toggle semantics).
+if [ -f "$REC_STATE" ]; then PHASE="stop"; else PHASE="start"; fi
+
+if [ "$PHASE" = "start" ]; then
+    pill_set listening
+    pill_launch
+    VOICE_PASTE_PHASE=start whisper-paste >/dev/null 2>&1 || true
+    exit 0
+fi
+
+# --- stop phase: transcribe (blocking) then inject ---
+pill_set thinking
+# Capture the focused window BEFORE the (blocking) transcription. The
+# ~1-3s of "thinking" is the only window in which the user can switch
+# apps — ydotool injects into whatever has focus at inject time, so a
+# switch would land the text in the wrong window. We compare focus
+# before/after and divert to the clipboard if it moved.
+focus_before="$(focus_id)"
+t0="$(date +%s.%N)"
+text="$(VOICE_PASTE_PHASE=stop whisper-paste 2>/dev/null || true)"
+t1="$(date +%s.%N)"
+if [ -n "$text" ]; then
+    focus_after="$(focus_id)"
+    if [ -n "$focus_before" ] && [ -n "$focus_after" ] && [ "$focus_before" != "$focus_after" ]; then
+        # Focus changed during transcription — do NOT type into the wrong
+        # window. Leave the text on the clipboard for a deliberate paste.
+        printf '%s' "$text" | wl-copy 2>/dev/null || true
+        pill_set copied
+        note_divert
+        history_log "$text" "clipboard-divert" 1 "$t0" "$t1"
+    else
+        inject "$text"
+        pill_set done
+        history_log "$text" "$(resolve_method "$text")" 0 "$t0" "$t1"
+    fi
+else
+    pill_set cancel   # silence / hallucination / empty transcript
+fi

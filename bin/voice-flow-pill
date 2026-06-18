@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+# voice-flow-pill — Wispr-Flow-style floating feedback pill for COSMIC.
+#
+# A layer-shell overlay anchored bottom-center, ALWAYS above other
+# windows, that NEVER steals keyboard focus (layer-shell keyboard mode
+# NONE) — essential, or the dictation target would lose focus to the
+# pill and the injected text would go nowhere.
+#
+# It taps the microphone directly (arecord raw PCM) to drive a live
+# audio-reactive waveform while listening, and reads its display state
+# from a one-word state file so the `voice-flow` lifecycle can move it
+# through: listening -> thinking -> done/cancel -> (fade) -> exit.
+#
+# WHY this is possible on Wayland: normal apps can't be always-on-top
+# or edge-anchored (security). The layer-shell protocol is the
+# sanctioned exception, and COSMIC implements it (its panel/dock use it).
+#
+# State file: $XDG_RUNTIME_DIR/ormus-voice/pill.state  (single word)
+#   listening | thinking | done | copied | cancel | quit
+import os
+import sys
+
+# gtk4-layer-shell MUST be loaded before libwayland-client or the layer
+# surface silently fails to initialize. Under PyGObject, GTK loads
+# libwayland first, so the sanctioned fix is to LD_PRELOAD the layer-
+# shell lib — which only takes effect at process start. So we set the
+# env and re-exec ourselves once (guarded against an exec loop).
+_PRELOAD = "/usr/local/lib/x86_64-linux-gnu/libgtk4-layer-shell.so.0"
+_TYPELIB = "/usr/local/lib/x86_64-linux-gnu/girepository-1.0"
+if os.environ.get("_VFP_PRELOADED") != "1":
+    os.environ["_VFP_PRELOADED"] = "1"
+    if os.path.exists(_PRELOAD):
+        pre = os.environ.get("LD_PRELOAD", "")
+        os.environ["LD_PRELOAD"] = _PRELOAD + ((":" + pre) if pre else "")
+    os.environ["GI_TYPELIB_PATH"] = _TYPELIB + ":" + os.environ.get("GI_TYPELIB_PATH", "")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+import math
+import struct
+import threading
+import subprocess
+from collections import deque
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gtk, Gdk, GLib, Gtk4LayerShell as LayerShell  # noqa: E402
+
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+STATE_FILE = os.path.join(RUNTIME, "ormus-voice", "pill.state")
+NUM_BARS = 22
+WIDTH, HEIGHT = 240, 60
+
+# Ormus palette (SSOT: ormus-platform tokens.css) — obsidian ground,
+# gold voice. Both active states stay in the gold family (brightness +
+# motion separate them, not an off-brand hue); green/copper are brief
+# outcome flashes in desaturated Aurum tones.
+OBSIDIAN = (0.043, 0.043, 0.051)   # #0B0B0D
+GOLD_RIM = (0.824, 0.620, 0.239)   # #D29E3D
+COL = {
+    "listening": (0.878, 0.698, 0.345),  # #e0b258 gold-bright — being heard
+    "thinking":  (0.824, 0.620, 0.239),  # #D29E3D brand gold — processing
+    "done":      (0.478, 0.733, 0.604),  # #7ABB9A Aurum green — typed in
+    "copied":    (0.878, 0.698, 0.345),  # #e0b258 gold — copied (focus moved)
+    "cancel":    (0.800, 0.400, 0.200),  # #CC6633 Aurum copper
+}
+
+
+class Pill(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="solutions.ormus.VoiceFlowPill")
+        self.state = "listening"
+        self.levels = deque([0.0] * NUM_BARS, maxlen=NUM_BARS)
+        self.phase = 0.0          # animation clock
+        self.opacity = 0.0        # fade-in
+        self.fading_out = False
+        self._stop_audio = threading.Event()
+
+    def do_activate(self):
+        win = Gtk.ApplicationWindow(application=self)
+        win.set_default_size(WIDTH, HEIGHT)
+        win.set_decorated(False)
+        win.add_css_class("pill-window")
+
+        # --- layer-shell: overlay, bottom-center, focus-proof ---
+        LayerShell.init_for_window(win)
+        LayerShell.set_layer(win, LayerShell.Layer.OVERLAY)
+        LayerShell.set_keyboard_mode(win, LayerShell.KeyboardMode.NONE)
+        LayerShell.set_anchor(win, LayerShell.Edge.BOTTOM, True)
+        LayerShell.set_margin(win, LayerShell.Edge.BOTTOM, 80)
+        LayerShell.set_namespace(win, "voice-flow-pill")
+
+        css = Gtk.CssProvider()
+        css.load_from_data(
+            b".pill-window{background:transparent;}"
+        )
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        self.area = Gtk.DrawingArea()
+        self.area.set_content_width(WIDTH)
+        self.area.set_content_height(HEIGHT)
+        self.area.set_draw_func(self._draw)
+        win.set_child(self.area)
+        self.win = win
+        win.present()
+
+        # Drive the mic tap + animation + state polling.
+        threading.Thread(target=self._audio_loop, daemon=True).start()
+        GLib.timeout_add(33, self._tick)          # ~30 fps
+        GLib.timeout_add(80, self._poll_state)
+
+    # --- live mic level -> bar history ------------------------------
+    def _audio_loop(self):
+        # Separate raw capture from the engine's recorder; PipeWire
+        # allows multiple readers of the same source.
+        try:
+            proc = subprocess.Popen(
+                ["arecord", "-q", "-f", "S16_LE", "-r", "16000",
+                 "-c", "1", "-t", "raw"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            return
+        chunk = 1024
+        while not self._stop_audio.is_set():
+            data = proc.stdout.read(chunk * 2)
+            if not data:
+                break
+            n = len(data) // 2
+            if n == 0:
+                continue
+            samples = struct.unpack("<%dh" % n, data[: n * 2])
+            rms = math.sqrt(sum(s * s for s in samples) / n) / 32768.0
+            # Perceptual boost: quiet speech still shows.
+            lvl = min(1.0, (rms ** 0.5) * 2.2)
+            self.levels.append(lvl)
+        proc.terminate()
+
+    # --- per-frame animation ----------------------------------------
+    def _tick(self):
+        self.phase += 0.18
+        target = 0.0 if self.fading_out else 1.0
+        self.opacity += (target - self.opacity) * 0.25
+        if self.fading_out and self.opacity < 0.03:
+            self._stop_audio.set()
+            self.quit()
+            return False
+        self.area.queue_draw()
+        return True
+
+    def _poll_state(self):
+        try:
+            with open(STATE_FILE) as f:
+                s = f.read().strip()
+        except FileNotFoundError:
+            s = ""
+        if s == "quit":
+            self.fading_out = True
+        elif s in COL:
+            if s != self.state:
+                self.state = s
+                if s in ("done", "copied", "cancel"):
+                    self._stop_audio.set()
+                    # Hold "copied" longer — the user has to act on it
+                    # (press Ctrl+V), so give them time to notice.
+                    hold = 1500 if s == "copied" else 650
+                    GLib.timeout_add(hold, self._begin_fade)
+        return True
+
+    def _begin_fade(self):
+        self.fading_out = True
+        return False
+
+    # --- drawing -----------------------------------------------------
+    def _draw(self, area, cr, w, h, *_):
+        a = max(0.0, min(1.0, self.opacity))
+        # rounded translucent obsidian capsule
+        r = h / 2.0
+        cr.set_source_rgba(*OBSIDIAN, 0.88 * a)
+        self._rounded(cr, 0, 0, w, h, r)
+        cr.fill()
+
+        # faint gold rim
+        cr.set_source_rgba(*GOLD_RIM, 0.30 * a)
+        self._rounded(cr, 0.5, 0.5, w - 1, h - 1, r)
+        cr.set_line_width(1)
+        cr.stroke()
+
+        cr2 = COL.get(self.state, COL["listening"])
+        pad = 18
+        bw = (w - 2 * pad) / NUM_BARS
+        mid = h / 2.0
+        levels = list(self.levels)
+        for i in range(NUM_BARS):
+            if self.state == "listening":
+                lv = levels[i]
+            elif self.state == "thinking":
+                # travelling sine "breathing" sweep
+                lv = 0.35 + 0.45 * (0.5 + 0.5 * math.sin(self.phase - i * 0.5))
+            else:
+                lv = 0.5
+            bh = max(3.0, lv * (h - 16))
+            x = pad + i * bw + bw * 0.18
+            cr.set_source_rgba(cr2[0], cr2[1], cr2[2], (0.55 + 0.45 * lv) * a)
+            self._rounded(cr, x, mid - bh / 2, bw * 0.64, bh, bw * 0.32)
+            cr.fill()
+
+    @staticmethod
+    def _rounded(cr, x, y, w, h, r):
+        r = min(r, w / 2, h / 2)
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 1.5 * math.pi)
+        cr.close_path()
+
+
+def main():
+    # Allow a self-quitting smoke test: `voice-flow-pill --selftest`
+    if "--selftest" in sys.argv:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(STATE_FILE, "w") as f:
+            f.write("listening")
+        GLib.timeout_add(1800, lambda: (open(STATE_FILE, "w").write("quit")))
+    app = Pill()
+    app.run(None)
+
+
+if __name__ == "__main__":
+    main()

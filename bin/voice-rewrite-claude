@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Pipe a raw whisper transcript through Claude Haiku 4.5 to clean it
+# up before paste. Reads transcript on stdin, prints cleaned text on
+# stdout. Honoured by whisper-paste when set as VOICE_PASTE_REWRITE_COMMAND.
+#
+# Failure modes (all fall back to passthrough so voice paste keeps working):
+#   - missing API key → print stdin unchanged
+#   - network error / timeout → print stdin unchanged
+#   - empty/garbled response → print stdin unchanged
+#
+# Configuration (env):
+#   ANTHROPIC_API_KEY        the API key (preferred)
+#   ANTHROPIC_API_KEY_FILE   path to file containing the key (fallback)
+#   VOICE_REWRITE_MODEL      claude model id (default claude-haiku-4-5)
+#   VOICE_REWRITE_TIMEOUT    curl --max-time in seconds (default 6)
+#   VOICE_REWRITE_DEBUG      "1" → log to ~/.local/share/ormus-voice/rewrite.log
+
+set -euo pipefail
+
+INPUT=$(cat)
+[ -n "$INPUT" ] || { exit 0; }
+
+# Key resolution: env var first, then standard credentials path.
+KEY="${ANTHROPIC_API_KEY:-}"
+if [ -z "$KEY" ] && [ -n "${ANTHROPIC_API_KEY_FILE:-}" ] && [ -r "$ANTHROPIC_API_KEY_FILE" ]; then
+    KEY=$(cat "$ANTHROPIC_API_KEY_FILE")
+fi
+if [ -z "$KEY" ] && [ -d "$HOME/.credentials/anthropic" ]; then
+    DEFAULT_FILE=$(ls "$HOME/.credentials/anthropic"/api-token-* 2>/dev/null | head -1)
+    [ -n "$DEFAULT_FILE" ] && KEY=$(cat "$DEFAULT_FILE")
+fi
+if [ -z "$KEY" ]; then
+    echo "$INPUT"
+    exit 0
+fi
+
+MODEL="${VOICE_REWRITE_MODEL:-claude-haiku-4-5}"
+TIMEOUT="${VOICE_REWRITE_TIMEOUT:-6}"
+
+SYSTEM_PROMPT='You clean up dictated speech for terminal paste. Output ONLY the cleaned text — no preamble, no quotes, no markdown, no explanation.
+
+Rules:
+- Apply punctuation and capitalization.
+- Remove dictation filler: "uh", "um", "like" (when used as filler), stutters, repeated words from speech artifacts.
+- Interpret spoken punctuation literally: "comma", "period", "question mark", "exclamation point", "new line", "new paragraph", "open quote", "close quote".
+- Keep technical terms verbatim (file paths, command names, code identifiers, URLs).
+- Do not paraphrase. Do not add content the speaker did not say.
+- If the transcript is already clean, return it unchanged.
+- Output the cleaned text directly. Do not wrap in quotes or code blocks.'
+
+# If the wrapper passed a vocabulary list, append it to the system
+# prompt so the model corrects mishearings to the canonical spelling
+# of proper nouns. Defense in depth: --prompt biases whisper, this
+# catches what slips through.
+if [ -n "${VOICE_REWRITE_VOCABULARY:-}" ]; then
+    SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+Known proper nouns (correct any near-homophones to these canonical spellings):
+$VOICE_REWRITE_VOCABULARY"
+fi
+
+# Build JSON body with prompt caching on the system prompt — first call
+# pays full system, every call within ~5 min hits cache.
+BODY=$(jq -n \
+    --arg model "$MODEL" \
+    --arg system "$SYSTEM_PROMPT" \
+    --arg user "$INPUT" \
+    '{
+        model: $model,
+        max_tokens: 512,
+        temperature: 0,
+        system: [
+            {type: "text", text: $system, cache_control: {type: "ephemeral"}}
+        ],
+        messages: [
+            {role: "user", content: $user}
+        ]
+    }')
+
+RESP=$(curl -sS -m "$TIMEOUT" -X POST "https://api.anthropic.com/v1/messages" \
+    -H "x-api-key: $KEY" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "content-type: application/json" \
+    -d "$BODY" 2>/dev/null)
+
+if [ "${VOICE_REWRITE_DEBUG:-0}" = "1" ]; then
+    LOG="$HOME/.local/share/ormus-voice/rewrite.log"
+    mkdir -p "$(dirname "$LOG")"
+    {
+        echo "=== $(date -Iseconds) ==="
+        echo "INPUT: $INPUT"
+        echo "RESP: $RESP"
+    } >> "$LOG"
+fi
+
+# Extract content[0].text. If parsing fails or text is empty, fall back to raw input.
+CLEANED=$(echo "$RESP" | jq -r '.content[0].text // empty' 2>/dev/null)
+if [ -z "$CLEANED" ]; then
+    echo "$INPUT"
+    exit 0
+fi
+
+# Strip leading/trailing whitespace, defensively unwrap quotes if the
+# model added them despite instructions.
+CLEANED=$(echo "$CLEANED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+if [[ "$CLEANED" =~ ^\".*\"$ ]] && [[ "$CLEANED" != *$'\n'* ]]; then
+    CLEANED="${CLEANED:1:-1}"
+fi
+
+echo "$CLEANED"

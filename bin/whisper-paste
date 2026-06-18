@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+# Voice → text helper invoked by Ormus Terminal's Super+V (VoicePaste).
+#
+# Three modes (set via VOICE_PASTE_MODE):
+#
+#   toggle (default) — first Super+V starts recording, second Super+V
+#                      stops + transcribes + pastes. Closer to the
+#                      WisprFlow UX.
+#   fixed            — record VOICE_PASTE_SECONDS then auto-transcribe.
+#                      Original behavior; no second-press needed.
+#
+# Pipeline: arecord → silence gate (sox) → whisper.cpp → hallucination
+# filter → optional AI rewrite → stdout. The terminal bracketed-pastes
+# whatever this prints — empty stdout = no paste.
+#
+# IMPORTANT — GPU device selection on hybrid iGPU + dGPU systems:
+#   Vulkan enumerates the iGPU as device 0 (slower than CPU on most
+#   workloads). Set VOICE_PASTE_GPU_DEVICE=1 to force the dGPU.
+#
+# Tunables (env):
+#   VOICE_PASTE_MODE         "toggle" (default) or "fixed"
+#   VOICE_PASTE_SECONDS      fixed-mode recording length (default 8)
+#   VOICE_PASTE_MAX_SECONDS  toggle-mode arecord cap (default 120)
+#   VOICE_PASTE_MODEL        whisper model name (default base.en)
+#   VOICE_PASTE_MODEL_PATH   explicit ggml model path (overrides MODEL)
+#   VOICE_PASTE_RMS_MIN      silence-gate threshold (default 0.005)
+#   VOICE_PASTE_THREADS      whisper-cli thread count (default: nproc)
+#   VOICE_PASTE_GPU          "1" use GPU, "0" CPU only (default: 1)
+#   VOICE_PASTE_GPU_DEVICE   Vulkan device index (default: 1 → dGPU)
+#   VOICE_PASTE_REWRITE_COMMAND  shell command to clean transcript via
+#                                an LLM. Reads stdin, prints stdout.
+#                                See voice-rewrite-claude / -ollama.
+
+set -euo pipefail
+
+MODE=${VOICE_PASTE_MODE:-toggle}
+DURATION=${VOICE_PASTE_SECONDS:-8}
+MAX_DURATION=${VOICE_PASTE_MAX_SECONDS:-120}
+MODEL_NAME=${VOICE_PASTE_MODEL:-base.en}
+RMS_MIN=${VOICE_PASTE_RMS_MIN:-0.005}
+THREADS=${VOICE_PASTE_THREADS:-$(nproc)}
+GPU=${VOICE_PASTE_GPU:-1}
+GPU_DEVICE=${VOICE_PASTE_GPU_DEVICE:-1}
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/models"
+MODEL_PATH="${VOICE_PASTE_MODEL_PATH:-$DATA_DIR/ggml-${MODEL_NAME}.bin}"
+
+# Vocabulary file — biases whisper's acoustic decoder toward the
+# user's proper nouns and gets fed to the rewriter so it corrects to
+# canonical spellings.
+VOCAB_FILE="${VOICE_PASTE_VOCABULARY_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice/vocabulary.txt}"
+VOCAB=""
+if [ -f "$VOCAB_FILE" ]; then
+    VOCAB=$(grep -v '^\s*#' "$VOCAB_FILE" | grep -v '^\s*$' | tr '\n' ' ')
+fi
+
+# Corrections log — append-only history of what whisper heard vs what
+# the user actually wanted. Future few-shot tuning reads this. Append
+# happens out-of-band via `voice-correct` — wrapper just exposes the
+# path so other tools can find it.
+export VOICE_PASTE_CORRECTIONS_LOG="${VOICE_PASTE_CORRECTIONS_LOG:-${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/corrections.jsonl}"
+mkdir -p "$(dirname "$VOICE_PASTE_CORRECTIONS_LOG")"
+
+# Per-user runtime state — auto-cleaned on logout when XDG_RUNTIME_DIR
+# is set, falls back to /tmp otherwise.
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/ormus-voice"
+mkdir -p "$STATE_DIR"
+STATE_FILE="$STATE_DIR/recording.state"
+NOTIFY_ID_FILE="$STATE_DIR/notify.id"
+
+# --- Notification helper -----------------------------------------------
+# Each note() call replaces the previous one in the same voice-paste
+# session, so "✍️ Transcribing" gets superseded by "✓ Pasted" rather
+# than lingering for its 30 s timeout. Tracks the last id in a state
+# file so it survives the toggle's two-process boundary.
+note() {
+    # VOICE_PASTE_QUIET=1 suppresses toasts (e.g. voice-flow's system-
+    # wide mode, where the floating pill already conveys state).
+    [ "${VOICE_PASTE_QUIET:-0}" = "1" ] && return 0
+    command -v notify-send >/dev/null 2>&1 || return 0
+    local timeout="$1" title="$2" body="${3:-}"
+    local prev_id="" args=()
+    [ -f "$NOTIFY_ID_FILE" ] && prev_id=$(cat "$NOTIFY_ID_FILE" 2>/dev/null || true)
+    [ -n "$prev_id" ] && args+=(--replace-id="$prev_id")
+    args+=(--print-id --hint=int:transient:1 -t "$timeout" -a "Ormus Voice" "$title" "$body")
+    local new_id
+    new_id=$(notify-send "${args[@]}" 2>/dev/null) || return 0
+    [ -n "$new_id" ] && echo "$new_id" > "$NOTIFY_ID_FILE"
+}
+
+# Clear the notify-id file once the user-facing flow ends so the NEXT
+# voice-paste session starts a fresh notification rather than replacing
+# a stale one.
+clear_notify_state() {
+    rm -f "$NOTIFY_ID_FILE"
+}
+
+beep() {
+    local sound="$1"
+    if command -v paplay >/dev/null 2>&1; then
+        paplay --volume=20000 "/usr/share/sounds/freedesktop/stereo/$sound.oga" 2>/dev/null &
+    fi
+}
+
+# --- Preconditions ------------------------------------------------------
+if ! command -v arecord >/dev/null 2>&1; then
+    note 4000 "Voice paste failed" "arecord not installed (apt install alsa-utils)"
+    clear_notify_state
+    exit 1
+fi
+if ! command -v whisper-cli >/dev/null 2>&1; then
+    note 4000 "Voice paste failed" "whisper-cli not in PATH"
+    clear_notify_state
+    exit 1
+fi
+if [ ! -f "$MODEL_PATH" ]; then
+    note 5000 "Voice paste failed" "model not found at $MODEL_PATH"
+    clear_notify_state
+    exit 1
+fi
+
+# --- Common transcribe + paste path ------------------------------------
+# Takes a finished WAV path. Runs silence gate, whisper, hallucination
+# filter, optional rewrite, then prints to stdout for the terminal to
+# bracketed-paste. Always clears notify state before exit.
+transcribe_and_paste() {
+    local wav="$1"
+    [ -f "$wav" ] || { note 2500 "🤫 Empty" "no recording captured"; clear_notify_state; return 0; }
+
+    # Silence gate.
+    if command -v sox >/dev/null 2>&1; then
+        local rms
+        rms=$(sox "$wav" -n stat 2>&1 | awk -F'[: ]+' '/RMS *amplitude/{print $4; exit}')
+        if [ -n "$rms" ] && awk -v r="$rms" -v m="$RMS_MIN" 'BEGIN{exit !(r < m)}'; then
+            note 2500 "🤫 Silent" "no speech detected (RMS=$rms)"
+            clear_notify_state
+            return 0
+        fi
+    fi
+
+    # GPU flags.
+    local backend_note gpu_flags
+    if [ "$GPU" = "1" ]; then
+        backend_note="GPU dev $GPU_DEVICE"
+        gpu_flags=(-dev "$GPU_DEVICE")
+    else
+        backend_note="CPU ${THREADS}t"
+        gpu_flags=(-ng)
+    fi
+    local vocab_note=""
+    [ -n "$VOCAB" ] && vocab_note=" +vocab"
+    note 30000 "✍️ Transcribing" "whisper.cpp ($MODEL_NAME, $backend_note$vocab_note)…"
+
+    # Build whisper-cli args. --prompt biases the acoustic decoder toward
+    # the user's vocabulary; --carry-initial-prompt makes it apply
+    # across audio chunks for long recordings.
+    local whisper_args=(-m "$MODEL_PATH" -f "$wav" -l en -t "$THREADS"
+                        "${gpu_flags[@]}" -nt -np)
+    if [ -n "$VOCAB" ]; then
+        whisper_args+=(--prompt "$VOCAB" --carry-initial-prompt)
+    fi
+
+    local trimmed
+    trimmed=$(whisper-cli "${whisper_args[@]}" 2>/dev/null \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    if [ -z "$trimmed" ]; then
+        note 2500 "🤫 Empty transcript" "whisper produced no text"
+        clear_notify_state
+        return 0
+    fi
+
+    # Hallucination filter.
+    local lower
+    lower=$(echo "$trimmed" | tr '[:upper:]' '[:lower:]' | tr -d '.,!?')
+    case "$lower" in
+        "" | "you" | "thank you" | "thanks for watching" | "bye" | "okay" | \
+        "thank you for watching" | "music" | "the" | "subscribe")
+            note 2500 "🤫 Hallucinated silence" "(\"$trimmed\" — not pasted)"
+            clear_notify_state
+            return 0
+            ;;
+    esac
+    if echo "$lower" | grep -qE '\b(\w+)\b([[:space:],-]+\1\b){3,}'; then
+        note 2500 "🤫 Hallucinated repetition" "(not pasted: \"${trimmed:0:60}…\")"
+        clear_notify_state
+        return 0
+    fi
+
+    # Optional AI rewrite. Pass the vocabulary along so the rewriter
+    # can correct mishearings to canonical spellings (defense in depth
+    # — even if --prompt didn't bias whisper enough, the rewriter has
+    # the term list).
+    if [ -n "${VOICE_PASTE_REWRITE_COMMAND:-}" ]; then
+        note 30000 "🪄 Cleaning up" "rewriting via LLM…"
+        local rewritten
+        rewritten=$(printf '%s' "$trimmed" | VOICE_REWRITE_VOCABULARY="$VOCAB" \
+            $VOICE_PASTE_REWRITE_COMMAND 2>/dev/null || true)
+        rewritten=$(echo "$rewritten" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$rewritten" ]; then
+            note 3000 "✓ Pasted (rewritten)" "$(echo "$rewritten" | head -c 80)"
+            clear_notify_state
+            echo -n "$rewritten" > "${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+            echo "$rewritten"
+            return 0
+        fi
+        note 2000 "⚠ Rewrite failed; raw paste" "${trimmed:0:60}"
+    fi
+
+    note 3000 "✓ Pasted" "$(echo "$trimmed" | head -c 80)"
+    clear_notify_state
+    # Persist the last paste for voice-correct to diff against later.
+    echo -n "$trimmed" > "${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+    echo "$trimmed"
+}
+
+# --- Mode dispatch ------------------------------------------------------
+
+PHASE="${VOICE_PASTE_PHASE:-}"
+
+# Explicit PHASE wins — used by ormus-term hold-to-talk where Rust
+# fires the wrapper once on key-down (PHASE=start) and once on key-up
+# (PHASE=stop). When PHASE is unset, fall through to MODE-based
+# auto-detection (state file present = stop, absent = start, fixed
+# means just record N seconds straight through).
+if [ "$PHASE" = "start" ]; then
+    MODE="toggle"
+    [ -f "$STATE_FILE" ] && rm -f "$STATE_FILE"  # any stale state from a crashed prior cycle
+fi
+if [ "$PHASE" = "stop" ]; then
+    MODE="toggle"
+    [ -f "$STATE_FILE" ] || {
+        note 2500 "🤫 No active recording" "stop phase fired without start"
+        clear_notify_state
+        exit 0
+    }
+fi
+
+if [ "$MODE" = "toggle" ] && [ -f "$STATE_FILE" ]; then
+    # === STOP PHASE: state exists, this is the second press ===
+    pid=$(cut -d':' -f1 "$STATE_FILE" 2>/dev/null || echo)
+    wav=$(cut -d':' -f2- "$STATE_FILE" 2>/dev/null || echo)
+    rm -f "$STATE_FILE"
+
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+        # arecord flushes the WAV header on SIGTERM; give it a moment
+        # to finalize before we read the file.
+        for _ in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+    fi
+    beep complete
+
+    trap 'rm -f "$wav"' EXIT
+    transcribe_and_paste "$wav"
+    exit 0
+fi
+
+if [ "$MODE" = "toggle" ]; then
+    # === START PHASE: no state, this is the first press ===
+    wav=$(mktemp -t voice-XXXXXX.wav)
+    note "$((MAX_DURATION * 1000))" "🎙 Recording" "press Super+V again to stop"
+    beep message
+    # Spawn arecord fully detached. setsid -f forks into a new session
+    # so SIGHUP doesn't reach it on parent exit. Crucially, redirecting
+    # all three standard FDs to /dev/null closes arecord's inherited
+    # pipe to the parent's stdout — without that, ormus-term's
+    # tokio::Command::output() blocks waiting for those FDs to drain
+    # (which only happens when arecord finishes), so the second
+    # Super+V press hits the in-flight guard and is silently ignored.
+    setsid -f arecord -q -d "$MAX_DURATION" -f S16_LE -r 16000 -c 1 \
+        -t wav "$wav" </dev/null >/dev/null 2>&1
+    # setsid -f doesn't expose the child PID. Discover it by polling
+    # the file we told arecord to write — the process opening that
+    # path is our recorder. Up to 200 ms of grace for arecord to start.
+    pid=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pid=$(pgrep -nf "arecord .* $wav$" | head -1)
+        [ -n "$pid" ] && break
+        sleep 0.02
+    done
+    if [ -z "$pid" ]; then
+        note 4000 "Voice paste failed" "could not start arecord"
+        rm -f "$wav"
+        clear_notify_state
+        exit 1
+    fi
+    echo "$pid:$wav" > "$STATE_FILE"
+    # Empty stdout = no paste happens on this press. Recording continues
+    # in the background until the next press (or MAX_DURATION elapses).
+    exit 0
+fi
+
+# === FIXED MODE: original 8-second-record-then-paste flow ===
+wav=$(mktemp -t voice-XXXXXX.wav)
+trap 'rm -f "$wav"' EXIT
+note "$((DURATION * 1000 + 500))" "🎙 Recording" "${DURATION}s — speak now"
+beep message
+arecord -q -d "$DURATION" -f S16_LE -r 16000 -c 1 -t wav "$wav" 2>/dev/null
+beep complete
+transcribe_and_paste "$wav"

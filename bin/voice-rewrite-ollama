@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Local Ollama variant of voice-rewrite-claude. Same contract: stdin
+# in, cleaned text out. Useful for offline / air-gapped use, or to
+# avoid per-request API cost.
+#
+# Recommended models (smaller is faster — voice cleanup is easy):
+#   llama3.2:3b   — best balance for English cleanup, ~600 ms
+#   qwen2.5:3b    — strong for technical vocabulary
+#   phi3.5:3.8b   — alternative if the above hallucinate
+#
+# Configuration (env):
+#   OLLAMA_HOST            base URL (default http://localhost:11434)
+#   VOICE_REWRITE_MODEL    ollama model tag (default llama3.2:3b)
+#   VOICE_REWRITE_TIMEOUT  curl --max-time in seconds (default 8)
+#   VOICE_REWRITE_DEBUG    "1" → log to ~/.local/share/ormus-voice/rewrite.log
+
+set -euo pipefail
+
+INPUT=$(cat)
+[ -n "$INPUT" ] || { exit 0; }
+
+HOST="${OLLAMA_HOST:-http://localhost:11434}"
+MODEL="${VOICE_REWRITE_MODEL:-llama3.2:3b}"
+TIMEOUT="${VOICE_REWRITE_TIMEOUT:-8}"
+
+SYSTEM_PROMPT='You clean up dictated speech for terminal paste. Output ONLY the cleaned text — no preamble, no quotes, no markdown, no explanation.
+
+Rules:
+- Apply punctuation and capitalization.
+- Remove dictation filler: "uh", "um", "like" (when used as filler), stutters, repeated words.
+- Interpret spoken punctuation literally: "comma", "period", "question mark", "exclamation point", "new line", "new paragraph".
+- Keep technical terms verbatim (file paths, command names, code identifiers, URLs).
+- Do not paraphrase. Do not add content the speaker did not say.
+- If already clean, return unchanged.'
+
+if [ -n "${VOICE_REWRITE_VOCABULARY:-}" ]; then
+    SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+Known proper nouns (correct any near-homophones to these canonical spellings):
+$VOICE_REWRITE_VOCABULARY"
+fi
+
+BODY=$(jq -n \
+    --arg model "$MODEL" \
+    --arg system "$SYSTEM_PROMPT" \
+    --arg prompt "$INPUT" \
+    '{
+        model: $model,
+        system: $system,
+        prompt: $prompt,
+        stream: false,
+        options: { temperature: 0 }
+    }')
+
+RESP=$(curl -sS -m "$TIMEOUT" -X POST "$HOST/api/generate" \
+    -H "content-type: application/json" \
+    -d "$BODY" 2>/dev/null)
+
+if [ "${VOICE_REWRITE_DEBUG:-0}" = "1" ]; then
+    LOG="$HOME/.local/share/ormus-voice/rewrite.log"
+    mkdir -p "$(dirname "$LOG")"
+    {
+        echo "=== $(date -Iseconds) ==="
+        echo "INPUT: $INPUT"
+        echo "RESP: $RESP"
+    } >> "$LOG"
+fi
+
+CLEANED=$(echo "$RESP" | jq -r '.response // empty' 2>/dev/null)
+if [ -z "$CLEANED" ]; then
+    echo "$INPUT"
+    exit 0
+fi
+
+CLEANED=$(echo "$CLEANED" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+echo "$CLEANED"

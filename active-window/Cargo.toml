@@ -1,0 +1,13 @@
+[package]
+name = "ormus-active-window"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ormus-active-window"
+path = "src/main.rs"
+
+[dependencies]
+cctk = { git = "https://github.com/pop-os/cosmic-protocols", package = "cosmic-client-toolkit" }
+cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols" }
+wayland-client = "0.31"
