@@ -176,7 +176,7 @@ transcribe_and_paste() {
     # answers. Vocabulary rides along as the per-request prompt.
     # backend.state tells the dashboard which engine served the last
     # dictation (runtime dir — it resets on reboot, like the rest).
-    local backend_state="${XDG_RUNTIME_DIR:-/tmp}/ormus-voice/backend.state"
+    local backend_state="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/backend.state"
     local trimmed="" host
     if [ "$REMOTE" = "on" ]; then
         for host in $REMOTE_HOSTS; do

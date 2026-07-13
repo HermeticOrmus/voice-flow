@@ -33,7 +33,7 @@ RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ormus-voice")
 
 REC_STATE = os.path.join(RUNTIME, "recording.state")
 PILL_STATE = os.path.join(RUNTIME, "pill.state")
-BACKEND_STATE = os.path.join(RUNTIME, "backend.state")
+BACKEND_STATE = os.path.join(DATA, "backend.state")
 HISTORY = os.path.join(DATA, "history.jsonl")
 LAST_PASTE = os.path.join(DATA, "last-paste.txt")
 MODELS_DIR = os.path.join(DATA, "models")

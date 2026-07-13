@@ -35,7 +35,7 @@ CORRECTIONS = os.path.join(DATA, "corrections.jsonl")
 VOCAB = os.path.join(CONF_DIR, "vocabulary.txt")
 SUBS = os.path.join(CONF_DIR, "substitutions.tsv")
 CONF = os.path.join(CONF_DIR, "voice-flow.conf")
-BACKEND_STATE = os.path.join(RUNTIME, "backend.state")
+BACKEND_STATE = os.path.join(DATA, "backend.state")
 
 PORT = int(os.environ.get("VOICE_FLOW_WEB_PORT", "7385"))
 HOSTS = {

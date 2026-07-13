@@ -13,7 +13,21 @@ local LLM cleanup, a focus-proof feedback pill, and a native control panel.
 | `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
 | `voice-flow-dashboard` | GTK4 control panel: live status, today's stats, engine card, toggles, last transcript. Quick controls. |
-| `voice-flow-web` | Rich local analytics dashboard (`http://127.0.0.1:7385`): charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. |
+| `voice-flow-web` | Rich analytics dashboard: charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. Runs on Sun (`http://127.0.0.1:7385`, GTK Analytics button) AND on corvin-mini, where it backs the public portal. |
+
+## The portal — voice.ormus.solutions
+
+Served **from corvin-mini** (always-on at HQ) behind a Cloudflare
+Tunnel (`voice-portal`) + CF Access (Ormus emails only, 30-day
+sessions). The voice data lives on Sun and syncs to mini via Syncthing
+(folders `voice-data` = `~/.local/share/ormus-voice` minus `models/`,
+`voice-conf` = `~/.config/ormus-voice`) — two-way, so vocabulary and
+settings edited in the portal flow back to Sun where dictation reads
+them. Mini-side units: user systemd `voice-flow-web.service` +
+`voice-portal-tunnel.service` (aiadmin, linger on). Sun keeps its own
+local `voice-flow-web.service` for the GTK Analytics button; Sun's
+tunnel unit is disabled. `backend.state` lives in the data dir (not
+runtime) precisely so the portal's engine card syncs.
 | `ormus-active-window` | Rust helper — prints the COSMIC focused window via `cosmic-toplevel-info-v1`. Powers the focus interlock and per-app profiles. |
 | `voice-rewrite-ollama` / `voice-rewrite-claude` | Optional Wispr-style AI cleanup commands. |
 | `voice-agent-ollama` | Agent mode: the transcript is an instruction, stdout is the answer. `VOICE_AGENT_MODEL` picks the model (default llama3.2:3b on mini; try `ornith-9b` for harder asks). |
