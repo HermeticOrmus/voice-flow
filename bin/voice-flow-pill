@@ -58,7 +58,6 @@ from gi.repository import Gtk, Gdk, GLib, Gtk4LayerShell as LayerShell  # noqa: 
 
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 STATE_FILE = os.path.join(RUNTIME, "ormus-voice", "pill.state")
-NUM_BARS = 22
 
 # Live partials: while listening, the pill re-transcribes its own mic
 # tap every ~1.2s against the fast base.en server on corvin-mini and
@@ -71,10 +70,13 @@ PARTIAL_HOSTS = os.environ.get(
 PARTIAL_WINDOW_S = 15      # sliding window of audio re-sent each tick
 PARTIAL_TICK_S = 1.2
 
+# Geometry: grounded rounded-rect, not a full capsule; thin bars.
 if PARTIALS_ON:
-    WIDTH, HEIGHT = 440, 78
+    WIDTH, HEIGHT, NUM_BARS = 440, 78, 36
 else:
-    WIDTH, HEIGHT = 240, 60
+    WIDTH, HEIGHT, NUM_BARS = 240, 60, 24
+CORNER_R = 14
+BAR_FRACTION = 0.42   # bar width inside its slot — thin marks, real gaps
 
 # Ormus palette (SSOT: ormus-platform tokens.css) — obsidian ground,
 # gold voice. Both active states stay in the gold family (brightness +
@@ -292,8 +294,8 @@ class Pill(Gtk.Application):
     # --- drawing -----------------------------------------------------
     def _draw(self, area, cr, w, h, *_):
         a = max(0.0, min(1.0, self.opacity))
-        # rounded translucent obsidian capsule
-        r = h / 2.0
+        # grounded translucent obsidian slab (rounded rect, not capsule)
+        r = CORNER_R
         cr.set_source_rgba(*OBSIDIAN, 0.88 * a)
         self._rounded(cr, 0, 0, w, h, r)
         cr.fill()
@@ -322,7 +324,13 @@ class Pill(Gtk.Application):
         pad = 18
         bw = (w - 2 * pad) / NUM_BARS
         mid = band_h / 2.0
+        # Bars turn copper as the recording cap nears — the quiet
+        # replacement for the removed timer.
+        if (self.state in LISTEN_STATES
+                and time.monotonic() - self.listen_start >= MAX_SECONDS - 15):
+            cr2 = COL["cancel"]
         levels = list(self.levels)
+        bar_w = bw * BAR_FRACTION
         for i in range(NUM_BARS):
             if self.state in LISTEN_STATES:
                 lv = levels[i]
@@ -332,9 +340,9 @@ class Pill(Gtk.Application):
             else:
                 lv = 0.5
             bh = max(3.0, lv * (band_h - 16))
-            x = pad + i * bw + bw * 0.18
+            x = pad + i * bw + (bw - bar_w) / 2
             cr.set_source_rgba(cr2[0], cr2[1], cr2[2], (0.55 + 0.45 * lv) * a)
-            self._rounded(cr, x, mid - bh / 2, bw * 0.64, bh, bw * 0.32)
+            self._rounded(cr, x, mid - bh / 2, bar_w, bh, bar_w / 2)
             cr.fill()
 
         # Live partial line — the TAIL of the text (most recent words).
@@ -351,17 +359,6 @@ class Pill(Gtk.Application):
             cr.move_to((w - ext.width) / 2, h - 12)
             cr.show_text(t)
 
-        # Elapsed timer while listening — copper as the hard cap nears.
-        if self.state in LISTEN_STATES:
-            el = int(time.monotonic() - self.listen_start)
-            col = COL["cancel"] if el >= MAX_SECONDS - 15 else cr2
-            cr.select_font_face("monospace", 0, 0)
-            cr.set_font_size(11)
-            txt = "%d:%02d" % divmod(el, 60)
-            ext = cr.text_extents(txt)
-            cr.set_source_rgba(col[0], col[1], col[2], 0.75 * a)
-            cr.move_to(w - ext.width - 14, mid + ext.height / 2)
-            cr.show_text(txt)
 
     def _center_text(self, cr, w, h, text, col, a, hint=None):
         cr.select_font_face("sans-serif", 0, 0)
