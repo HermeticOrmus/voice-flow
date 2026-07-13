@@ -66,6 +66,16 @@ Day-to-day: when a paste comes out wrong, `voice-correct "what I
 meant"` logs the pair; `voice-train distill` turns the journal into
 rules.
 
+## Live partials (streaming)
+
+While you speak, the pill re-transcribes its own mic tap every ~1.2 s
+against a second, fast whisper-server on mini (`:8091`, base.en,
+50–130 ms per call) and shows the words landing in real time. Feedback
+only — the injected text still comes from medium.en on stop. Sliding
+15 s window, non-speech annotations stripped, disabled automatically
+when no partial host answers. Toggle: `VOICE_FLOW_PARTIALS` (conf or
+web settings).
+
 ## Pill states
 
 Gold = dictation, silver = agent mode. While listening the pill shows

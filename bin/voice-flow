@@ -69,6 +69,10 @@ else
     export VOICE_PASTE_REWRITE_COMMAND="${VOICE_PASTE_REWRITE_COMMAND:-voice-rewrite-ollama}"
 fi
 
+# Live partials in the pill (needs the export — the conf is sourced,
+# not exported, and the pill is a spawned child).
+export VOICE_FLOW_PARTIALS="${VOICE_FLOW_PARTIALS:-1}"
+
 # Accuracy: medium.en (already on disk) is a large step up from base.en
 # for English. For Spanish/multilingual, switch to a large-v3-turbo
 # model (multilingual) via VOICE_PASTE_MODEL.

@@ -52,6 +52,8 @@ DEFAULTS = {
     "VOICE_PASTE_MODEL": "medium.en",
     "VOICE_FLOW_REWRITE": "on",
     "VOICE_FLOW_PILL": "1",
+    "VOICE_FLOW_LOG_TEXT": "0",
+    "VOICE_FLOW_PARTIALS": "1",
 }
 METHODS = ["auto", "type", "paste"]
 

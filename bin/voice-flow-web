@@ -44,7 +44,7 @@ HOSTS = {
     "100.107.202.72": "corvin-mini · Tailscale",
 }
 CONF_KEYS = ["VOICE_FLOW_METHOD", "VOICE_PASTE_MODEL", "VOICE_FLOW_REWRITE",
-             "VOICE_FLOW_PILL", "VOICE_FLOW_LOG_TEXT"]
+             "VOICE_FLOW_PILL", "VOICE_FLOW_LOG_TEXT", "VOICE_FLOW_PARTIALS"]
 TYPING_WPM = 40.0   # what the same words would cost on a keyboard
 SPEAKING_WPM = 150.0
 
@@ -382,6 +382,7 @@ function renderSettings(){
     `<div style="margin-top:10px">Local fallback model ${seg("VOICE_PASTE_MODEL",["base.en","medium.en"])}</div>`+
     sw("VOICE_FLOW_REWRITE","AI rewrite","on","off")+
     sw("VOICE_FLOW_PILL","Floating pill","1","0")+
+    sw("VOICE_FLOW_PARTIALS","Live partial words while speaking","1","0")+
     sw("VOICE_FLOW_LOG_TEXT","Keep transcript history (local only)","1","0");
 }
 async function setCfg(k,v){CFG[k]=v;await j("/api/config",{method:"POST",body:JSON.stringify(CFG)});renderSettings();load()}
