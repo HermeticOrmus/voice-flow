@@ -242,6 +242,15 @@ transcribe_and_paste() {
         return 0
     fi
 
+    # Learned corrections (voice-train): deterministic heard→canonical
+    # fixes applied BEFORE any LLM, so trained terms land right even in
+    # verbatim mode where the rewrite is skipped.
+    if command -v voice-substitute >/dev/null 2>&1; then
+        local substituted
+        substituted=$(printf '%s' "$trimmed" | voice-substitute 2>/dev/null || true)
+        [ -n "$substituted" ] && trimmed="$substituted"
+    fi
+
     # Optional AI rewrite. Pass the vocabulary along so the rewriter
     # can correct mishearings to canonical spellings (defense in depth
     # — even if --prompt didn't bias whisper enough, the rewriter has

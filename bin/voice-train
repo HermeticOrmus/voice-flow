@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# voice-train — teach the voice stack how YOU pronounce your terms.
+#
+# Enrollment: for each term, you say it out loud; the take is
+# transcribed RAW (no vocabulary biasing, so we capture the true
+# mishearing) and the heard→canonical pair is learned. Learned pairs
+# become deterministic fixes (substitutions.tsv, applied by
+# voice-substitute in every mode) and the canonical spellings join
+# vocabulary.txt (whisper prompt biasing + rewrite proper-noun list).
+#
+# Usage:
+#   voice-train                 # train every term in vocabulary.txt
+#   voice-train Embry0 Corvin   # train specific terms (added to vocab)
+#   voice-train distill         # rebuild substitutions.tsv from the
+#                               # corrections journal (voice-correct)
+#   voice-train status          # what's learned so far
+#
+# Env: VOICE_TRAIN_TAKES (default 2) — takes per term.
+
+set -euo pipefail
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice"
+VOCAB_FILE="$CONF_DIR/vocabulary.txt"
+SUBS_FILE="$CONF_DIR/substitutions.tsv"
+JOURNAL="$DATA_DIR/corrections.jsonl"
+TAKES="${VOICE_TRAIN_TAKES:-2}"
+REMOTE_HOSTS="${VOICE_PASTE_REMOTE_HOSTS:-10.55.0.2:8090 10.10.90.174:8090 100.107.202.72:8090}"
+mkdir -p "$CONF_DIR" "$DATA_DIR"
+
+# --- transcribe one take, RAW (no vocab prompt) ----------------------
+transcribe_raw() {  # $1 = wav path → prints transcript
+    local wav="$1" host out=""
+    for host in $REMOTE_HOSTS; do
+        out=$(curl -sSf --connect-timeout 0.4 -m 8 \
+            -F "file=@$wav" -F response_format=text \
+            "http://$host/inference" 2>/dev/null || true)
+        [ -n "$out" ] && break
+    done
+    if [ -z "$out" ] && command -v whisper-cli >/dev/null 2>&1; then
+        local model="${VOICE_PASTE_MODEL_PATH:-$DATA_DIR/models/ggml-${VOICE_PASTE_MODEL:-base.en}.bin}"
+        out=$(whisper-cli -m "$model" -f "$wav" -l en -nt -np 2>/dev/null || true)
+    fi
+    printf '%s' "$out" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/[[:space:]]\+/ /g'
+}
+
+# Normalize for comparison: lowercase, strip punctuation.
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9 ' | sed 's/[[:space:]]\+/ /g;s/^ //;s/ $//'; }
+
+add_rule() {  # $1 heard  $2 canonical — dedup on the heard phrase
+    local heard="$1" canonical="$2"
+    touch "$SUBS_FILE"
+    grep -qiP "^\Q$heard\E\t" "$SUBS_FILE" 2>/dev/null && return 0
+    printf '%s\t%s\n' "$heard" "$canonical" >> "$SUBS_FILE"
+    echo "    learned: \"$heard\" → \"$canonical\""
+}
+
+ensure_vocab() {  # $1 term — add to vocabulary.txt if absent
+    touch "$VOCAB_FILE"
+    grep -qiF "$1" "$VOCAB_FILE" 2>/dev/null || printf '%s\n' "$1" >> "$VOCAB_FILE"
+}
+
+# --- distill: corrections journal → substitution rules ---------------
+if [ "${1:-}" = "distill" ]; then
+    [ -f "$JOURNAL" ] || { echo "no corrections journal yet ($JOURNAL)"; exit 0; }
+    n=0
+    while IFS=$'\t' read -r heard actual; do
+        [ -n "$heard" ] && [ -n "$actual" ] || continue
+        [ "$(norm "$heard")" = "$(norm "$actual")" ] && continue
+        add_rule "$heard" "$actual" && n=$((n+1))
+    done < <(jq -r 'select(.heard and .actual) | .heard + "\t" + .actual' "$JOURNAL" 2>/dev/null)
+    echo "distilled $n rule(s) into $SUBS_FILE"
+    exit 0
+fi
+
+if [ "${1:-}" = "status" ]; then
+    echo "vocabulary terms:   $(grep -cv '^\s*#\|^\s*$' "$VOCAB_FILE" 2>/dev/null || echo 0)"
+    echo "substitution rules: $(grep -cv '^\s*#\|^\s*$' "$SUBS_FILE" 2>/dev/null || echo 0)"
+    echo "corrections logged: $(wc -l < "$JOURNAL" 2>/dev/null || echo 0)"
+    [ -s "$SUBS_FILE" ] && { echo; column -t -s $'\t' "$SUBS_FILE" | sed 's/^/  /'; }
+    exit 0
+fi
+
+# --- enrollment -------------------------------------------------------
+if [ $# -ge 1 ]; then
+    TERMS=("$@")
+else
+    mapfile -t TERMS < <(grep -v '^\s*#' "$VOCAB_FILE" 2>/dev/null | grep -v '^\s*$' || true)
+    [ ${#TERMS[@]} -gt 0 ] || {
+        echo "vocabulary.txt is empty — run: voice-train <term> [term...]"; exit 1; }
+fi
+
+echo "Training ${#TERMS[@]} term(s), $TAKES take(s) each."
+echo "Speak each term naturally when prompted; recording stops after 3s."
+echo
+
+for term in "${TERMS[@]}"; do
+    ensure_vocab "$term"
+    echo "── $term"
+    for take in $(seq "$TAKES"); do
+        printf '  take %s/%s — say “%s” … ' "$take" "$TAKES" "$term"
+        wav=$(mktemp -t voice-train-XXXXXX.wav)
+        arecord -q -d 3 -f S16_LE -r 48000 -c 1 -t wav "$wav" 2>/dev/null
+        if command -v vibecoding-record >/dev/null 2>&1; then
+            tuned=$(mktemp -t voice-train-tuned-XXXXXX.wav)
+            vibecoding-record --process "$wav" "$tuned" 2>/dev/null && mv -f "$tuned" "$wav" || rm -f "$tuned"
+        fi
+        heard=$(transcribe_raw "$wav")
+        rm -f "$wav"
+        # Strip trailing sentence punctuation whisper adds to isolates.
+        heard=$(printf '%s' "$heard" | sed 's/[.,!?]*$//')
+        if [ -z "$heard" ]; then
+            echo "heard nothing (too quiet?) — skipped"
+            continue
+        fi
+        if [ "$(norm "$heard")" = "$(norm "$term")" ]; then
+            echo "heard it right (\"$heard\")"
+            continue
+        fi
+        echo "heard: \"$heard\""
+        add_rule "$heard" "$term"
+        printf '{"ts":"%s","heard":%s,"actual":%s,"source":"voice-train"}\n' \
+            "$(date -Iseconds)" \
+            "$(printf '%s' "$heard" | jq -Rs .)" \
+            "$(printf '%s' "$term" | jq -Rs .)" >> "$JOURNAL"
+    done
+done
+
+echo
+echo "Done. Rules live in $SUBS_FILE — next dictation uses them."
+echo "Review anytime: voice-train status"

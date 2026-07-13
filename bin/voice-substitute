@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+# voice-substitute — deterministic learned-correction layer.
+#
+# stdin: a raw transcript. stdout: the transcript with known
+# mishearings replaced by their canonical forms. Sits between the
+# hallucination filter and the (optional) LLM rewrite in whisper-paste,
+# so trained terms land correctly in EVERY mode — including verbatim/
+# terminal mode, which never sees an LLM.
+#
+# Rules live in ~/.config/ormus-voice/substitutions.tsv:
+#   <heard phrase> <TAB> <canonical form>
+# built by `voice-train` (from live enrollment) and `voice-train
+# distill` (from the voice-correct corrections journal). Matching is
+# case-insensitive on word boundaries, longest phrase first, so
+# "embryo zero dashboard" wins over "embryo zero".
+import os
+import re
+import sys
+
+CONF = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+    "ormus-voice", "substitutions.tsv")
+
+text = sys.stdin.read()
+if not text.strip():
+    sys.stdout.write(text)
+    sys.exit(0)
+
+rules = []
+try:
+    with open(os.environ.get("VOICE_SUBSTITUTIONS", CONF)) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#") or "\t" not in line:
+                continue
+            heard, canonical = line.split("\t", 1)
+            heard, canonical = heard.strip(), canonical.strip()
+            if heard and canonical and heard.lower() != canonical.lower():
+                rules.append((heard, canonical))
+except FileNotFoundError:
+    sys.stdout.write(text)
+    sys.exit(0)
+
+# Longest heard-phrase first so multi-word rules outrank their parts.
+rules.sort(key=lambda r: len(r[0]), reverse=True)
+for heard, canonical in rules:
+    pat = re.compile(r"\b" + re.escape(heard) + r"\b", re.IGNORECASE)
+    text = pat.sub(canonical.replace("\\", "\\\\"), text)
+
+sys.stdout.write(text)

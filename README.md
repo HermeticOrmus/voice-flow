@@ -36,6 +36,35 @@ from input length → raw paste), and feeds the last few `voice-correct`
 journal entries as few-shot examples so recurring mishearings fix
 themselves.
 
+## Training the stack on your terms
+
+Three layers, compounding:
+
+1. **Vocabulary biasing** (`~/.config/ormus-voice/vocabulary.txt`) —
+   terms are fed to whisper as its decode prompt, so it *hears* them
+   more readily. First line of defense.
+2. **Learned substitutions** (`~/.config/ormus-voice/substitutions.tsv`)
+   — deterministic heard→canonical fixes applied by `voice-substitute`
+   after transcription, before any LLM. Works in every mode, including
+   verbatim/terminal where the rewrite is skipped.
+3. **Rewrite few-shot** — the corrections journal's latest pairs ride
+   into the cleanup prompt as examples.
+
+`voice-train` builds layers 1+2 from your actual voice: for each term
+it records you saying it, transcribes RAW (no biasing — captures the
+true mishearing), and learns the pair when whisper gets it wrong.
+
+```bash
+voice-train Embry0 Alqvimia McLeod   # enroll specific terms
+voice-train                          # re-run everything in vocabulary.txt
+voice-train status                   # what's learned
+voice-train distill                  # corrections journal → rules
+```
+
+Day-to-day: when a paste comes out wrong, `voice-correct "what I
+meant"` logs the pair; `voice-train distill` turns the journal into
+rules.
+
 ## Pill states
 
 Gold = dictation, silver = agent mode. While listening the pill shows
