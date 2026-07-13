@@ -160,39 +160,104 @@ history_log() {  # $1=text $2=method $3=diverted(0|1) $4=start-epoch $5=end-epoc
         >> "$HISTORY_LOG" 2>/dev/null || true
 }
 
+# Per-app rewrite profiles. The focused app decides how the transcript
+# is treated: terminals get the raw transcript verbatim (an LLM pass
+# would mangle paths and flags — whisper's vocabulary biasing still
+# applies), everything else gets the cleanup rewrite. Mapping lives in
+# app-profiles.conf: "<app_id-glob> <verbatim|clean>" per line.
+# COSMIC marks one window activated PER OUTPUT; when the activated set
+# maps to conflicting profiles, fall back to "clean" (rewrite is the
+# safer default for prose, and terminals are protected by the common
+# single-focus case).
+PROFILES_CONF="${VOICE_FLOW_APP_PROFILES:-${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice/app-profiles.conf}"
+app_profile() {
+    command -v ormus-active-window >/dev/null 2>&1 || { echo clean; return; }
+    [ -f "$PROFILES_CONF" ] || { echo clean; return; }
+    local ids id pat prof resolved="" p
+    ids=$(ormus-active-window --list 2>/dev/null \
+        | awk '/^\*/ { n=split($0, a, "app_id=\""); v=a[2]; sub(/".*/, "", v); print v }')
+    [ -n "$ids" ] || { echo clean; return; }
+    while IFS= read -r id; do
+        p="clean"
+        while read -r pat prof; do
+            case "$pat" in ''|'#'*) continue ;; esac
+            # shellcheck disable=SC2254
+            case "$id" in $pat) p="$prof"; break ;; esac
+        done < "$PROFILES_CONF"
+        if [ -z "$resolved" ]; then resolved="$p"
+        elif [ "$resolved" != "$p" ]; then resolved="clean"; break
+        fi
+    done <<EOF
+$ids
+EOF
+    echo "${resolved:-clean}"
+}
+
+# Agent mode: `voice-flow agent` dictates a COMMAND for the LLM instead
+# of text to transcribe — the model's ANSWER is what gets injected.
+# OpenWhispr calls this the voice-agent hotkey; no wake word needed.
+# The marker file carries the mode from the start press to the stop
+# press regardless of which keybind fires the stop.
+AGENT_MARKER="$STATE_DIR/agent.mode"
+[ "${1:-}" = "agent" ] && WANT_AGENT=1 || WANT_AGENT=0
+
 # Phase = whether a recording is already in flight (toggle semantics).
 if [ -f "$REC_STATE" ]; then PHASE="stop"; else PHASE="start"; fi
 
 if [ "$PHASE" = "start" ]; then
-    pill_set listening
+    if [ "$WANT_AGENT" = "1" ]; then
+        touch "$AGENT_MARKER"
+        pill_set listening-agent
+    else
+        rm -f "$AGENT_MARKER"
+        pill_set listening
+    fi
     pill_launch
     VOICE_PASTE_PHASE=start whisper-paste >/dev/null 2>&1 || true
     exit 0
 fi
 
 # --- stop phase: transcribe (blocking) then inject ---
-pill_set thinking
+# Agent-mode stop press: raw transcript goes to the agent as a command
+# (it handles disfluencies itself), and the ANSWER is injected.
+AGENT_RUN=0
+if [ -f "$AGENT_MARKER" ]; then
+    AGENT_RUN=1
+    rm -f "$AGENT_MARKER"
+    export VOICE_PASTE_REWRITE_COMMAND="${VOICE_FLOW_AGENT_COMMAND:-voice-agent-ollama}"
+    pill_set thinking-agent
+elif [ -n "${VOICE_PASTE_REWRITE_COMMAND:-}" ] && [ "$(app_profile)" = "verbatim" ]; then
+    # Focused app wants the transcript untouched (terminals).
+    export VOICE_PASTE_REWRITE_COMMAND=""
+    pill_set thinking
+else
+    pill_set thinking
+fi
+
 # Capture the focused window BEFORE the (blocking) transcription. The
 # ~1-3s of "thinking" is the only window in which the user can switch
 # apps — ydotool injects into whatever has focus at inject time, so a
 # switch would land the text in the wrong window. We compare focus
 # before/after and divert to the clipboard if it moved.
 focus_before="$(focus_id)"
+
 t0="$(date +%s.%N)"
 text="$(VOICE_PASTE_PHASE=stop whisper-paste 2>/dev/null || true)"
 t1="$(date +%s.%N)"
 if [ -n "$text" ]; then
     focus_after="$(focus_id)"
+    # One-line preview for the pill — what actually landed.
+    preview=$(printf '%s' "$text" | tr '\n' ' ' | head -c 120)
     if [ -n "$focus_before" ] && [ -n "$focus_after" ] && [ "$focus_before" != "$focus_after" ]; then
         # Focus changed during transcription — do NOT type into the wrong
         # window. Leave the text on the clipboard for a deliberate paste.
         printf '%s' "$text" | wl-copy 2>/dev/null || true
-        pill_set copied
+        pill_set "copied:$preview"
         note_divert
         history_log "$text" "clipboard-divert" 1 "$t0" "$t1"
     else
         inject "$text"
-        pill_set done
+        pill_set "done:$preview"
         history_log "$text" "$(resolve_method "$text")" 0 "$t0" "$t1"
     fi
 else

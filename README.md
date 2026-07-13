@@ -8,13 +8,40 @@ local LLM cleanup, a focus-proof feedback pill, and a native control panel.
 
 | Binary | What it is |
 |--------|-----------|
-| `voice-flow` | Orchestrator. Toggle record → transcribe (via `whisper-paste`) → inject with ydotool. Bound to **Super+V**. |
+| `voice-flow` | Orchestrator. Toggle record → transcribe (via `whisper-paste`) → inject with ydotool. Bound to **Super+V**. `voice-flow agent` (**Super+Shift+V**) treats the dictation as a command — the LLM's answer is what gets injected. |
 | `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper (remote-first, see below) → hallucination filter → optional LLM rewrite. |
 | `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
 | `voice-flow-dashboard` | GTK4 control panel: live status, today's stats, method/model/rewrite/pill toggles, last transcript. |
-| `ormus-active-window` | Rust helper — prints the COSMIC focused window via `cosmic-toplevel-info-v1`. Powers the focus interlock. |
+| `ormus-active-window` | Rust helper — prints the COSMIC focused window via `cosmic-toplevel-info-v1`. Powers the focus interlock and per-app profiles. |
 | `voice-rewrite-ollama` / `voice-rewrite-claude` | Optional Wispr-style AI cleanup commands. |
+| `voice-agent-ollama` | Agent mode: the transcript is an instruction, stdout is the answer. `VOICE_AGENT_MODEL` picks the model (default llama3.2:3b on mini; try `ornith-9b` for harder asks). |
+
+## Per-app profiles
+
+`~/.config/ormus-voice/app-profiles.conf` maps focused `app_id` globs to
+a profile: `verbatim` (raw transcript, no LLM — terminals, where a
+rewrite mangles paths and flags) or `clean` (full cleanup). Unlisted
+apps get `clean`. Find ids with `ormus-active-window --list`.
+
+## Rewrite hardening
+
+The cleanup prompt treats the speaker as never talking to the model:
+dictated questions get written down, not answered; dictated
+instructions get transcribed, not executed. Self-corrections ("wait
+no, scratch that") collapse to the corrected version; spoken
+punctuation/numbers/dates convert to written forms. The script also
+strips echoed transcript tags, aborts over-editing (output length far
+from input length → raw paste), and feeds the last few `voice-correct`
+journal entries as few-shot examples so recurring mishearings fix
+themselves.
+
+## Pill states
+
+Gold = dictation, silver = agent mode. While listening the pill shows
+an elapsed timer (copper as the 120 s cap nears); after injection it
+shows a one-line preview of exactly what landed; on a focus divert it
+shows the text plus "copied — Ctrl+V".
 
 ## Focus interlock (the window-switch fix)
 

@@ -15,8 +15,12 @@
 # or edge-anchored (security). The layer-shell protocol is the
 # sanctioned exception, and COSMIC implements it (its panel/dock use it).
 #
-# State file: $XDG_RUNTIME_DIR/ormus-voice/pill.state  (single word)
+# State file: $XDG_RUNTIME_DIR/ormus-voice/pill.state
 #   listening | thinking | done | copied | cancel | quit
+#   Agent-mode variants: listening-agent | thinking-agent (silver, not
+#   gold — you always know which mode is recording).
+#   done/copied accept an optional payload after a colon —
+#   "done:Hello there." — rendered as a one-line transcript preview.
 import os
 import sys
 
@@ -39,6 +43,7 @@ import math
 import struct
 import threading
 import subprocess
+import time
 from collections import deque
 
 import gi
@@ -54,22 +59,35 @@ WIDTH, HEIGHT = 240, 60
 # Ormus palette (SSOT: ormus-platform tokens.css) — obsidian ground,
 # gold voice. Both active states stay in the gold family (brightness +
 # motion separate them, not an off-brand hue); green/copper are brief
-# outcome flashes in desaturated Aurum tones.
+# outcome flashes in desaturated Aurum tones. Agent mode is SILVER —
+# a different metal in the same house, so a glance tells you whether
+# your words will be transcribed (gold) or executed (silver).
 OBSIDIAN = (0.043, 0.043, 0.051)   # #0B0B0D
 GOLD_RIM = (0.824, 0.620, 0.239)   # #D29E3D
+SILVER_RIM = (0.678, 0.729, 0.784)  # #ADBAC8
 COL = {
     "listening": (0.878, 0.698, 0.345),  # #e0b258 gold-bright — being heard
     "thinking":  (0.824, 0.620, 0.239),  # #D29E3D brand gold — processing
+    "listening-agent": (0.784, 0.827, 0.867),  # #C8D3DD silver-bright
+    "thinking-agent":  (0.678, 0.729, 0.784),  # #ADBAC8 silver
     "done":      (0.478, 0.733, 0.604),  # #7ABB9A Aurum green — typed in
     "copied":    (0.878, 0.698, 0.345),  # #e0b258 gold — copied (focus moved)
     "cancel":    (0.800, 0.400, 0.200),  # #CC6633 Aurum copper
 }
+LISTEN_STATES = ("listening", "listening-agent")
+THINK_STATES = ("thinking", "thinking-agent")
+END_STATES = ("done", "copied", "cancel")
+# Toggle-mode arecord cap in whisper-paste — the timer turns copper as
+# the recording approaches it.
+MAX_SECONDS = int(os.environ.get("VOICE_PASTE_MAX_SECONDS", "120"))
 
 
 class Pill(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="solutions.ormus.VoiceFlowPill")
         self.state = "listening"
+        self.payload = ""         # transcript preview for done/copied
+        self.listen_start = time.monotonic()
         self.levels = deque([0.0] * NUM_BARS, maxlen=NUM_BARS)
         self.phase = 0.0          # animation clock
         self.opacity = 0.0        # fade-in
@@ -154,19 +172,29 @@ class Pill(Gtk.Application):
     def _poll_state(self):
         try:
             with open(STATE_FILE) as f:
-                s = f.read().strip()
+                raw = f.read().strip()
         except FileNotFoundError:
-            s = ""
+            raw = ""
+        # "done:Hello there." → state + one-line preview payload.
+        s, _, payload = raw.partition(":")
         if s == "quit":
             self.fading_out = True
         elif s in COL:
             if s != self.state:
                 self.state = s
-                if s in ("done", "copied", "cancel"):
+                self.payload = " ".join(payload.split())
+                if s in LISTEN_STATES:
+                    self.listen_start = time.monotonic()
+                if s in END_STATES:
                     self._stop_audio.set()
-                    # Hold "copied" longer — the user has to act on it
-                    # (press Ctrl+V), so give them time to notice.
-                    hold = 1500 if s == "copied" else 650
+                    # Hold longer when there's something to read: the
+                    # transcript preview, or the "press Ctrl+V" cue.
+                    if s == "copied":
+                        hold = 2600
+                    elif self.payload:
+                        hold = 1600
+                    else:
+                        hold = 650
                     GLib.timeout_add(hold, self._begin_fade)
         return True
 
@@ -183,21 +211,30 @@ class Pill(Gtk.Application):
         self._rounded(cr, 0, 0, w, h, r)
         cr.fill()
 
-        # faint gold rim
-        cr.set_source_rgba(*GOLD_RIM, 0.30 * a)
+        # faint rim — silver in agent mode, gold otherwise
+        rim = SILVER_RIM if self.state.endswith("-agent") else GOLD_RIM
+        cr.set_source_rgba(*rim, 0.30 * a)
         self._rounded(cr, 0.5, 0.5, w - 1, h - 1, r)
         cr.set_line_width(1)
         cr.stroke()
 
         cr2 = COL.get(self.state, COL["listening"])
+
+        # End states with a payload show the transcript preview instead
+        # of bars — you see WHAT landed, not just that something did.
+        if self.state in END_STATES and self.payload:
+            label = "copied — Ctrl+V" if self.state == "copied" else None
+            self._center_text(cr, w, h, self.payload, cr2, a, hint=label)
+            return
+
         pad = 18
         bw = (w - 2 * pad) / NUM_BARS
         mid = h / 2.0
         levels = list(self.levels)
         for i in range(NUM_BARS):
-            if self.state == "listening":
+            if self.state in LISTEN_STATES:
                 lv = levels[i]
-            elif self.state == "thinking":
+            elif self.state in THINK_STATES:
                 # travelling sine "breathing" sweep
                 lv = 0.35 + 0.45 * (0.5 + 0.5 * math.sin(self.phase - i * 0.5))
             else:
@@ -207,6 +244,40 @@ class Pill(Gtk.Application):
             cr.set_source_rgba(cr2[0], cr2[1], cr2[2], (0.55 + 0.45 * lv) * a)
             self._rounded(cr, x, mid - bh / 2, bw * 0.64, bh, bw * 0.32)
             cr.fill()
+
+        # Elapsed timer while listening — copper as the hard cap nears.
+        if self.state in LISTEN_STATES:
+            el = int(time.monotonic() - self.listen_start)
+            col = COL["cancel"] if el >= MAX_SECONDS - 15 else cr2
+            cr.select_font_face("monospace", 0, 0)
+            cr.set_font_size(11)
+            txt = "%d:%02d" % divmod(el, 60)
+            ext = cr.text_extents(txt)
+            cr.set_source_rgba(col[0], col[1], col[2], 0.75 * a)
+            cr.move_to(w - ext.width - 14, h / 2 + ext.height / 2)
+            cr.show_text(txt)
+
+    def _center_text(self, cr, w, h, text, col, a, hint=None):
+        cr.select_font_face("sans-serif", 0, 0)
+        cr.set_font_size(13)
+        pad = 16
+        # Ellipsize to fit the capsule width.
+        t = text
+        while t and cr.text_extents(t + "…").width > w - 2 * pad:
+            t = t[:-1]
+        if t != text:
+            t = t + "…"
+        ext = cr.text_extents(t)
+        base_y = h / 2 + ext.height / 2 - (6 if hint else 0)
+        cr.set_source_rgba(col[0], col[1], col[2], 0.95 * a)
+        cr.move_to((w - ext.width) / 2, base_y)
+        cr.show_text(t)
+        if hint:
+            cr.set_font_size(9)
+            hx = cr.text_extents(hint)
+            cr.set_source_rgba(col[0], col[1], col[2], 0.60 * a)
+            cr.move_to((w - hx.width) / 2, base_y + 14)
+            cr.show_text(hint)
 
     @staticmethod
     def _rounded(cr, x, y, w, h, r):

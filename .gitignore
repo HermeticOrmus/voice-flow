@@ -1,2 +1,3 @@
 active-window/target/
 *.swp
+__pycache__/

@@ -33,9 +33,19 @@ RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ormus-voice")
 
 REC_STATE = os.path.join(RUNTIME, "recording.state")
 PILL_STATE = os.path.join(RUNTIME, "pill.state")
+BACKEND_STATE = os.path.join(RUNTIME, "backend.state")
 HISTORY = os.path.join(DATA, "history.jsonl")
 LAST_PASTE = os.path.join(DATA, "last-paste.txt")
 MODELS_DIR = os.path.join(DATA, "models")
+VOCAB_PATH = os.path.join(CONF_DIR, "vocabulary.txt")
+PROFILES_PATH = os.path.join(CONF_DIR, "app-profiles.conf")
+
+# Friendly names for the offload hosts (matches whisper-paste's probe).
+HOST_NAMES = {
+    "10.55.0.2": "corvin-mini · Thunderbolt",
+    "10.10.90.174": "corvin-mini · HQ LAN",
+    "100.107.202.72": "corvin-mini · Tailscale",
+}
 
 DEFAULTS = {
     "VOICE_FLOW_METHOD": "auto",
@@ -105,9 +115,9 @@ def available_models():
 
 
 def today_stats():
-    """(count, words) of dictations whose ts starts with today's date."""
+    """(count, words, avg_ms) of dictations from today."""
     today = date.today().isoformat()
-    count = words = 0
+    count = words = ms_total = ms_n = 0
     try:
         with open(HISTORY) as f:
             for line in f:
@@ -121,9 +131,13 @@ def today_stats():
                 if str(rec.get("ts", "")).startswith(today):
                     count += 1
                     words += int(rec.get("words", 0) or 0)
+                    ms = int(rec.get("transcribe_ms", 0) or 0)
+                    if ms > 0:
+                        ms_total += ms
+                        ms_n += 1
     except FileNotFoundError:
         pass
-    return count, words
+    return count, words, (ms_total // ms_n if ms_n else 0)
 
 
 def read_text(path, limit=600):
@@ -169,7 +183,18 @@ class Dashboard(Gtk.Application):
         stats_card.add_css_class("card")
         self.stat_count = self._stat_block(stats_card, "0", "dictations today")
         self.stat_words = self._stat_block(stats_card, "0", "words today")
+        self.stat_ms = self._stat_block(stats_card, "—", "avg speed")
         root.append(stats_card)
+
+        # --- inference engine (offload state) ---
+        eng = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        eng.add_css_class("card")
+        self.eng_dot = Gtk.Label(label="●"); self.eng_dot.add_css_class("dot")
+        self.eng_label = Gtk.Label(label="engine: —")
+        self.eng_label.add_css_class("last"); self.eng_label.set_halign(Gtk.Align.START)
+        self.eng_label.set_hexpand(True); self.eng_label.set_xalign(0)
+        eng.append(self.eng_dot); eng.append(self.eng_label)
+        root.append(eng)
 
         # --- method ---
         root.append(self._section("INJECTION METHOD"))
@@ -188,8 +213,8 @@ class Dashboard(Gtk.Application):
             seg.append(b); self.method_btns[m] = b
         root.append(seg)
 
-        # --- model ---
-        root.append(self._section("MODEL"))
+        # --- model (local fallback; the remote server owns its own) ---
+        root.append(self._section("LOCAL FALLBACK MODEL"))
         self.model_btns = {}
         mseg = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         mseg.add_css_class("linked")
@@ -224,15 +249,41 @@ class Dashboard(Gtk.Application):
         last_card.set_child(self.last)
         root.append(last_card)
 
-        # --- dictate button ---
-        go = Gtk.Button(label="Dictate  ·  Super+V"); go.add_css_class("go")
+        # --- action buttons ---
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        go = Gtk.Button(label="Dictate · Super+V"); go.add_css_class("go")
+        go.set_hexpand(True)
         go.connect("clicked", lambda *_: subprocess.Popen(["voice-flow"]))
-        root.append(go)
+        agent = Gtk.Button(label="Agent · Super+Shift+V")
+        agent.set_hexpand(True)
+        agent.connect("clicked", lambda *_: subprocess.Popen(["voice-flow", "agent"]))
+        row.append(go); row.append(agent)
+        root.append(row)
+
+        # Editors for the two user-owned tuning files.
+        row2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for label, path in (("Vocabulary", VOCAB_PATH), ("App profiles", PROFILES_PATH)):
+            b = Gtk.Button(label=label)
+            b.set_hexpand(True)
+            b.connect("clicked", self._open_editor, path)
+            row2.append(b)
+        root.append(row2)
 
         self._refresh()
         GLib.timeout_add(400, self._poll_status)
         GLib.timeout_add(2000, self._refresh)
+        GLib.timeout_add(10000, self._probe_remote)
+        self._probe_remote()
         win.present()
+
+    @staticmethod
+    def _open_editor(_btn, path):
+        for editor in (["gnome-text-editor", path], ["xdg-open", path]):
+            try:
+                subprocess.Popen(editor)
+                return
+            except FileNotFoundError:
+                continue
 
     # --- builders ---
     def _stat_block(self, parent, value, label):
@@ -278,14 +329,17 @@ class Dashboard(Gtk.Application):
 
     # --- live polling ---
     def _poll_status(self):
+        pill = read_text(PILL_STATE, 160).partition(":")[0]
         if os.path.exists(REC_STATE):
-            state, text = "listening", "listening"
-        else:
-            pill = read_text(PILL_STATE, 32)
-            if pill == "thinking" and self._pill_alive():
-                state, text = "thinking", "transcribing"
+            if pill == "listening-agent":
+                state, text = "listening", "listening (agent)"
             else:
-                state, text = "idle", "idle"
+                state, text = "listening", "listening"
+        elif pill in ("thinking", "thinking-agent") and self._pill_alive():
+            state = "thinking"
+            text = "asking agent" if pill == "thinking-agent" else "transcribing"
+        else:
+            state, text = "idle", "idle"
         for c in ("idle", "listening", "thinking"):
             self.dot.remove_css_class(c)
         self.dot.add_css_class(state)
@@ -294,16 +348,50 @@ class Dashboard(Gtk.Application):
 
     @staticmethod
     def _pill_alive():
-        return subprocess.run(["pgrep", "-f", "voice-flow-pill"],
+        return subprocess.run(["pgrep", "-f", "voice-flow-pil["+"]"],
                               capture_output=True).returncode == 0
 
     def _refresh(self, *_):
-        count, words = today_stats()
+        count, words, avg_ms = today_stats()
         self.stat_count.set_text(str(count))
         self.stat_words.set_text(str(words))
+        self.stat_ms.set_text("%.1fs" % (avg_ms / 1000.0) if avg_ms else "—")
         last = read_text(LAST_PASTE)
         self.last.set_text(last if last else "(nothing yet)")
         return True
+
+    def _probe_remote(self):
+        """Reachability of the offload host + last-used engine line."""
+        def worker():
+            reachable = None
+            for ip, name in HOST_NAMES.items():
+                r = subprocess.run(
+                    ["curl", "-s", "-o", "/dev/null", "--connect-timeout", "0.3",
+                     "-m", "1", "http://%s:8090/" % ip],
+                    capture_output=True)
+                if r.returncode in (0, 22):  # 22 = HTTP error; server IS there
+                    reachable = name
+                    break
+            backend = read_text(BACKEND_STATE, 64)
+            if backend.startswith("remote "):
+                ip = backend.split()[1].split(":")[0]
+                used = HOST_NAMES.get(ip, backend[7:])
+            elif backend.startswith("local "):
+                used = "local fallback (%s)" % backend[6:]
+            else:
+                used = "—"
+            GLib.idle_add(self._set_engine, reachable, used)
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _set_engine(self, reachable, used):
+        for c in ("idle", "listening", "thinking"):
+            self.eng_dot.remove_css_class(c)
+        self.eng_dot.add_css_class("listening" if reachable else "idle")
+        avail = reachable if reachable else "offline — local fallback"
+        self.eng_label.set_text("engine: %s\nlast dictation: %s" % (avail, used))
+        return False
 
 
 if __name__ == "__main__":

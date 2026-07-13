@@ -6,11 +6,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HOME/.local/bin"
 mkdir -p "$BIN" "$HOME/.local/share/applications"
 
-for f in voice-flow voice-flow-pill voice-flow-dashboard vibecoding-record; do
+for f in voice-flow voice-flow-pill voice-flow-dashboard vibecoding-record voice-agent-ollama; do
     ln -sf "$HERE/bin/$f" "$BIN/$f"
     chmod +x "$HERE/bin/$f"
     echo "linked $f"
 done
+
+# Default per-app profiles — only if the user hasn't customized one.
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice"
+mkdir -p "$CONF_DIR"
+if [ ! -f "$CONF_DIR/app-profiles.conf" ]; then
+    cp "$HERE/config/app-profiles.conf" "$CONF_DIR/app-profiles.conf"
+    echo "installed default app-profiles.conf"
+fi
 
 if command -v cargo >/dev/null 2>&1; then
     echo "building ormus-active-window…"
