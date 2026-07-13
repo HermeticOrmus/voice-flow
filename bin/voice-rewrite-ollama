@@ -9,9 +9,11 @@
 #   phi3.5:3.8b   — alternative if the above hallucinate
 #
 # Configuration (env):
-#   OLLAMA_HOST            base URL (default http://localhost:11434)
+#   OLLAMA_HOST            single base URL — overrides the host probe
+#   OLLAMA_HOSTS           space-separated URLs, first reachable wins
+#                          (default: corvin-mini via TB → LAN → local)
 #   VOICE_REWRITE_MODEL    ollama model tag (default llama3.2:3b)
-#   VOICE_REWRITE_TIMEOUT  curl --max-time in seconds (default 8)
+#   VOICE_REWRITE_TIMEOUT  curl --max-time in seconds (default 4)
 #   VOICE_REWRITE_DEBUG    "1" → log to ~/.local/share/ormus-voice/rewrite.log
 
 set -euo pipefail
@@ -19,9 +21,35 @@ set -euo pipefail
 INPUT=$(cat)
 [ -n "$INPUT" ] || { exit 0; }
 
-HOST="${OLLAMA_HOST:-http://localhost:11434}"
 MODEL="${VOICE_REWRITE_MODEL:-llama3.2:3b}"
-TIMEOUT="${VOICE_REWRITE_TIMEOUT:-8}"
+TIMEOUT="${VOICE_REWRITE_TIMEOUT:-4}"
+
+# Host resolution: explicit OLLAMA_HOST wins; otherwise probe the list
+# and take the first that answers /api/version. corvin-mini (TB, then
+# HQ LAN, then Tailscale) before Sun-local — mini keeps the model
+# pinned in VRAM, local ollama competes with scribe for the 5070 Ti.
+HOSTS="${OLLAMA_HOSTS:-http://10.55.0.2:11434 http://10.10.90.174:11434 http://100.107.202.72:11434 http://localhost:11434}"
+HOST=""
+if [ -n "${OLLAMA_HOST:-}" ]; then
+    HOST="$OLLAMA_HOST"
+else
+    for h in $HOSTS; do
+        if curl -s --connect-timeout 0.4 -m 1 "$h/api/version" >/dev/null 2>&1; then
+            HOST="$h"
+            break
+        fi
+    done
+fi
+# No host reachable → pass input through untouched.
+[ -n "$HOST" ] || { echo "$INPUT"; exit 0; }
+
+# Pin the model only on remote hosts (mini has VRAM to spare; pinning
+# on Sun-local would squeeze the already-contended 5070 Ti).
+KEEP_ALIVE="5m"
+case "$HOST" in
+    *localhost*|*127.0.0.1*) : ;;
+    *) KEEP_ALIVE="-1" ;;
+esac
 
 SYSTEM_PROMPT='You clean up dictated speech for terminal paste. Output ONLY the cleaned text — no preamble, no quotes, no markdown, no explanation.
 
@@ -44,17 +72,21 @@ BODY=$(jq -n \
     --arg model "$MODEL" \
     --arg system "$SYSTEM_PROMPT" \
     --arg prompt "$INPUT" \
+    --arg keep "$KEEP_ALIVE" \
     '{
         model: $model,
         system: $system,
         prompt: $prompt,
         stream: false,
-        options: { temperature: 0 }
+        keep_alive: ($keep | tonumber? // $keep),
+        options: { temperature: 0, num_ctx: 4096 }
     }')
 
+# `|| true`: a curl timeout must fall through to the raw-input echo
+# below, not kill the script (set -e).
 RESP=$(curl -sS -m "$TIMEOUT" -X POST "$HOST/api/generate" \
     -H "content-type: application/json" \
-    -d "$BODY" 2>/dev/null)
+    -d "$BODY" 2>/dev/null || true)
 
 if [ "${VOICE_REWRITE_DEBUG:-0}" = "1" ]; then
     LOG="$HOME/.local/share/ormus-voice/rewrite.log"

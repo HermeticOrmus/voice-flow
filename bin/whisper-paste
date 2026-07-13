@@ -28,6 +28,13 @@
 #   VOICE_PASTE_THREADS      whisper-cli thread count (default: nproc)
 #   VOICE_PASTE_GPU          "1" use GPU, "0" CPU only (default: 1)
 #   VOICE_PASTE_GPU_DEVICE   Vulkan device index (default: 1 → dGPU)
+#   VOICE_PASTE_REMOTE       "on" (default) try remote whisper-server
+#                            first, "off" local-only
+#   VOICE_PASTE_REMOTE_HOSTS space-separated host:port list, first
+#                            reachable wins (default: corvin-mini via
+#                            TB → HQ LAN → Tailscale)
+#   VOICE_PASTE_REMOTE_TIMEOUT  curl --max-time for remote inference
+#                            (default 6; connect probe is 0.4s/host)
 #   VOICE_PASTE_REWRITE_COMMAND  shell command to clean transcript via
 #                                an LLM. Reads stdin, prints stdout.
 #                                See voice-rewrite-claude / -ollama.
@@ -42,6 +49,13 @@ RMS_MIN=${VOICE_PASTE_RMS_MIN:-0.005}
 THREADS=${VOICE_PASTE_THREADS:-$(nproc)}
 GPU=${VOICE_PASTE_GPU:-1}
 GPU_DEVICE=${VOICE_PASTE_GPU_DEVICE:-1}
+
+# Remote whisper-server offload (corvin-mini). medium.en sits resident
+# in the 8060S — no per-call model load, ~0.4s for 11s of audio. Local
+# whisper-cli remains the fallback when no host answers.
+REMOTE=${VOICE_PASTE_REMOTE:-on}
+REMOTE_HOSTS=${VOICE_PASTE_REMOTE_HOSTS:-"10.55.0.2:8090 10.10.90.174:8090 100.107.202.72:8090"}
+REMOTE_TIMEOUT=${VOICE_PASTE_REMOTE_TIMEOUT:-6}
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/models"
 MODEL_PATH="${VOICE_PASTE_MODEL_PATH:-$DATA_DIR/ggml-${MODEL_NAME}.bin}"
@@ -155,31 +169,48 @@ transcribe_and_paste() {
     trap 'rm -f "$cleaned" 2>/dev/null || true' RETURN
     wav="$cleaned"
 
-    # GPU flags.
-    local backend_note gpu_flags
-    if [ "$GPU" = "1" ]; then
-        backend_note="GPU dev $GPU_DEVICE"
-        gpu_flags=(-dev "$GPU_DEVICE")
-    else
-        backend_note="CPU ${THREADS}t"
-        gpu_flags=(-ng)
-    fi
     local vocab_note=""
     [ -n "$VOCAB" ] && vocab_note=" +vocab"
-    note 30000 "✍️ Transcribing" "whisper.cpp ($MODEL_NAME, $backend_note$vocab_note)…"
 
-    # Build whisper-cli args. --prompt biases the acoustic decoder toward
-    # the user's vocabulary; --carry-initial-prompt makes it apply
-    # across audio chunks for long recordings.
-    local whisper_args=(-m "$MODEL_PATH" -f "$wav" -l en -t "$THREADS"
-                        "${gpu_flags[@]}" -nt -np)
-    if [ -n "$VOCAB" ]; then
-        whisper_args+=(--prompt "$VOCAB" --carry-initial-prompt)
+    # Remote first: POST the tuned WAV to the first whisper-server that
+    # answers. Vocabulary rides along as the per-request prompt.
+    local trimmed="" host
+    if [ "$REMOTE" = "on" ]; then
+        for host in $REMOTE_HOSTS; do
+            note 30000 "✍️ Transcribing" "whisper-server @ $host (medium.en$vocab_note)…"
+            trimmed=$(curl -sSf --connect-timeout 0.4 -m "$REMOTE_TIMEOUT" \
+                -F "file=@$wav" -F response_format=text \
+                ${VOCAB:+-F "prompt=$VOCAB"} \
+                "http://$host/inference" 2>/dev/null \
+                | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+            [ -n "$trimmed" ] && break
+        done
     fi
 
-    local trimmed
-    trimmed=$(whisper-cli "${whisper_args[@]}" 2>/dev/null \
-        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # Local fallback: whisper-cli, cold-start per call.
+    if [ -z "$trimmed" ]; then
+        local backend_note gpu_flags
+        if [ "$GPU" = "1" ]; then
+            backend_note="GPU dev $GPU_DEVICE"
+            gpu_flags=(-dev "$GPU_DEVICE")
+        else
+            backend_note="CPU ${THREADS}t"
+            gpu_flags=(-ng)
+        fi
+        note 30000 "✍️ Transcribing" "local whisper.cpp ($MODEL_NAME, $backend_note$vocab_note)…"
+
+        # Build whisper-cli args. --prompt biases the acoustic decoder toward
+        # the user's vocabulary; --carry-initial-prompt makes it apply
+        # across audio chunks for long recordings.
+        local whisper_args=(-m "$MODEL_PATH" -f "$wav" -l en -t "$THREADS"
+                            "${gpu_flags[@]}" -nt -np)
+        if [ -n "$VOCAB" ]; then
+            whisper_args+=(--prompt "$VOCAB" --carry-initial-prompt)
+        fi
+
+        trimmed=$(whisper-cli "${whisper_args[@]}" 2>/dev/null \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    fi
 
     if [ -z "$trimmed" ]; then
         note 2500 "🤫 Empty transcript" "whisper produced no text"

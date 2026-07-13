@@ -9,7 +9,7 @@ local LLM cleanup, a focus-proof feedback pill, and a native control panel.
 | Binary | What it is |
 |--------|-----------|
 | `voice-flow` | Orchestrator. Toggle record → transcribe (via `whisper-paste`) → inject with ydotool. Bound to **Super+V**. |
-| `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper.cpp (GPU) → hallucination filter → optional LLM rewrite. |
+| `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper (remote-first, see below) → hallucination filter → optional LLM rewrite. |
 | `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
 | `voice-flow-dashboard` | GTK4 control panel: live status, today's stats, method/model/rewrite/pill toggles, last transcript. |
@@ -25,6 +25,36 @@ via `ormus-active-window --list`) before transcription and re-checks after; if
 focus moved, it **diverts the transcript to the clipboard** and notifies you to
 paste, instead of typing into the wrong window. Degrades safely: if the helper
 is absent, it behaves as before (always inject).
+
+## corvin-mini offload (remote-first inference)
+
+Sun's 12 GB 5070 Ti is contended (scribe's resident whisper-server +
+batch transcription jobs), which starved dictation: whisper-cli
+cold-started per call and the ollama rewrite fell to CPU (47 s → 8 s
+timeout → raw paste). Both inference stages now run on corvin-mini
+(Radeon 8060S, 64 GB VRAM budget) with models resident:
+
+- **Transcribe**: whisper.cpp `whisper-server` systemd service on
+  `mini:8090`, medium.en pinned. ~0.4 s for 11 s of audio, measured
+  from Sun over the Thunderbolt link.
+- **Rewrite**: mini's ollama (`llama3.2:3b`, `keep_alive -1`,
+  `num_ctx 4096`, 100 % GPU). ~0.3 s warm.
+
+Both scripts probe hosts in order — Thunderbolt `10.55.0.2` → HQ LAN
+`10.10.90.174` → Tailscale `100.107.202.72` — and fall back to local
+inference (whisper-cli) / raw passthrough (rewrite) when nothing
+answers. A fully-dead remote costs ~0.4 s of probing. Override with
+`VOICE_PASTE_REMOTE=off`, `VOICE_PASTE_REMOTE_HOSTS`, `OLLAMA_HOSTS`.
+
+Mini side lives at `corvin-mini:~/tools/whisper.cpp` (Vulkan build;
+`glslc` copied from Sun, `spirv-headers` from apt) with models in
+`~/.local/share/whisper-models/` and the unit at
+`/etc/systemd/system/whisper-server.service`. The TB peer IP is the
+NetworkManager profile `tb-sun` (`10.55.0.2/30`, autoconnect).
+
+Note: the dashboard's model toggle governs the **local fallback**
+only — the server's resident model (medium.en) wins on the remote
+path.
 
 ## Config
 
