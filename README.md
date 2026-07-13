@@ -12,7 +12,8 @@ local LLM cleanup, a focus-proof feedback pill, and a native control panel.
 | `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper (remote-first, see below) → hallucination filter → optional LLM rewrite. |
 | `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
-| `voice-flow-dashboard` | GTK4 control panel: live status, today's stats, method/model/rewrite/pill toggles, last transcript. |
+| `voice-flow-dashboard` | GTK4 control panel: live status, today's stats, engine card, toggles, last transcript. Quick controls. |
+| `voice-flow-web` | Rich local analytics dashboard (`http://127.0.0.1:7385`): charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. |
 | `ormus-active-window` | Rust helper — prints the COSMIC focused window via `cosmic-toplevel-info-v1`. Powers the focus interlock and per-app profiles. |
 | `voice-rewrite-ollama` / `voice-rewrite-claude` | Optional Wispr-style AI cleanup commands. |
 | `voice-agent-ollama` | Agent mode: the transcript is an instruction, stdout is the answer. `VOICE_AGENT_MODEL` picks the model (default llama3.2:3b on mini; try `ornith-9b` for harder asks). |

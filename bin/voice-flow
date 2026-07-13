@@ -155,8 +155,14 @@ history_log() {  # $1=text $2=method $3=diverted(0|1) $4=start-epoch $5=end-epoc
     ts=$(date --iso-8601=seconds 2>/dev/null || date)
     [ -n "${VOICE_PASTE_REWRITE_COMMAND:-}" ] && rewrite=true || rewrite=false
     mkdir -p "$(dirname "$HISTORY_LOG")"
-    printf '{"ts":"%s","words":%s,"chars":%s,"model":"%s","method":"%s","rewrite":%s,"transcribe_ms":%s,"diverted":%s}\n' \
-        "$ts" "${words:-0}" "$chars" "$VOICE_PASTE_MODEL" "$method" "$rewrite" "${ms:-0}" "$diverted" \
+    # Transcript text is logged ONLY when explicitly enabled
+    # (VOICE_FLOW_LOG_TEXT=1 in the conf) — counts-only by default.
+    local text_field=""
+    if [ "${VOICE_FLOW_LOG_TEXT:-0}" = "1" ] && command -v jq >/dev/null 2>&1; then
+        text_field=",\"text\":$(printf '%s' "$text" | jq -Rs . 2>/dev/null || echo '""')"
+    fi
+    printf '{"ts":"%s","words":%s,"chars":%s,"model":"%s","method":"%s","rewrite":%s,"transcribe_ms":%s,"diverted":%s%s}\n' \
+        "$ts" "${words:-0}" "$chars" "$VOICE_PASTE_MODEL" "$method" "$rewrite" "${ms:-0}" "$diverted" "$text_field" \
         >> "$HISTORY_LOG" 2>/dev/null || true
 }
 

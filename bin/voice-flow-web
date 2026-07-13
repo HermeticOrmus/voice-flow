@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+# voice-flow-web — rich local analytics + management dashboard.
+#
+# The Wispr-class front-end: stats, charts, streaks, history, training
+# data management, engine status, settings. Everything the GTK panel
+# can't comfortably render. Self-contained: python stdlib server on
+# 127.0.0.1 only, inline CSS/JS, no external requests, reads the same
+# flat files the rest of the stack writes.
+#
+#   voice-flow-web            # start (or reuse) server + open browser
+#   voice-flow-web --serve    # server only, foreground
+#
+# Data sources: history.jsonl (counts; text only if VOICE_FLOW_LOG_TEXT=1),
+# vocabulary.txt, substitutions.tsv, corrections.jsonl, backend.state,
+# voice-flow.conf.
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import threading
+import urllib.request
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HOME = os.path.expanduser("~")
+DATA = os.path.join(os.environ.get("XDG_DATA_HOME", HOME + "/.local/share"), "ormus-voice")
+CONF_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "ormus-voice")
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ormus-voice")
+
+HISTORY = os.path.join(DATA, "history.jsonl")
+CORRECTIONS = os.path.join(DATA, "corrections.jsonl")
+VOCAB = os.path.join(CONF_DIR, "vocabulary.txt")
+SUBS = os.path.join(CONF_DIR, "substitutions.tsv")
+CONF = os.path.join(CONF_DIR, "voice-flow.conf")
+BACKEND_STATE = os.path.join(RUNTIME, "backend.state")
+
+PORT = int(os.environ.get("VOICE_FLOW_WEB_PORT", "7385"))
+HOSTS = {
+    "10.55.0.2": "corvin-mini · Thunderbolt",
+    "10.10.90.174": "corvin-mini · HQ LAN",
+    "100.107.202.72": "corvin-mini · Tailscale",
+}
+CONF_KEYS = ["VOICE_FLOW_METHOD", "VOICE_PASTE_MODEL", "VOICE_FLOW_REWRITE",
+             "VOICE_FLOW_PILL", "VOICE_FLOW_LOG_TEXT"]
+TYPING_WPM = 40.0   # what the same words would cost on a keyboard
+SPEAKING_WPM = 150.0
+
+
+def read_history():
+    rows = []
+    try:
+        with open(HISTORY) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return rows
+
+
+def summary():
+    rows = read_history()
+    days = defaultdict(lambda: {"words": 0, "count": 0, "ms": [], "agent": 0})
+    total_words = 0
+    for r in rows:
+        d = str(r.get("ts", ""))[:10]
+        if not d:
+            continue
+        w = int(r.get("words", 0) or 0)
+        days[d]["words"] += w
+        days[d]["count"] += 1
+        total_words += w
+        ms = int(r.get("transcribe_ms", 0) or 0)
+        if 0 < ms < 120000:
+            days[d]["ms"].append(ms)
+    # streak: consecutive days ending today
+    streak = 0
+    cur = date.today()
+    while days.get(cur.isoformat(), {}).get("count", 0) > 0:
+        streak += 1
+        cur -= timedelta(days=1)
+    # last 14 days series
+    series = []
+    for i in range(13, -1, -1):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        v = days.get(d, {"words": 0, "count": 0, "ms": []})
+        med = sorted(v["ms"])[len(v["ms"]) // 2] if v["ms"] else 0
+        series.append({"day": d, "words": v["words"], "count": v["count"], "med_ms": med})
+    today = days.get(date.today().isoformat(), {"words": 0, "count": 0, "ms": []})
+    t_ms = today["ms"]
+    minutes_saved = total_words / TYPING_WPM - total_words / SPEAKING_WPM
+    recent = [r for r in rows[-50:] if r.get("text")]
+    recent.reverse()
+    return {
+        "today_words": today["words"],
+        "today_count": today["count"],
+        "today_avg_ms": (sum(t_ms) // len(t_ms)) if t_ms else 0,
+        "total_words": total_words,
+        "total_count": len(rows),
+        "streak": streak,
+        "minutes_saved": round(minutes_saved),
+        "series": series,
+        "recent": recent,
+    }
+
+
+def training():
+    vocab = []
+    try:
+        with open(VOCAB) as f:
+            vocab = [l.strip() for l in f
+                     if l.strip() and not l.strip().startswith("#")]
+    except FileNotFoundError:
+        pass
+    subs = []
+    try:
+        with open(SUBS) as f:
+            for l in f:
+                l = l.rstrip("\n")
+                if l and not l.startswith("#") and "\t" in l:
+                    h, c = l.split("\t", 1)
+                    subs.append({"heard": h, "canonical": c})
+    except FileNotFoundError:
+        pass
+    corr = []
+    try:
+        with open(CORRECTIONS) as f:
+            for l in f:
+                try:
+                    corr.append(json.loads(l))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return {"vocabulary": vocab, "substitutions": subs, "corrections": corr[-30:]}
+
+
+def read_conf():
+    cfg = {"VOICE_FLOW_METHOD": "auto", "VOICE_PASTE_MODEL": "medium.en",
+           "VOICE_FLOW_REWRITE": "on", "VOICE_FLOW_PILL": "1",
+           "VOICE_FLOW_LOG_TEXT": "0"}
+    try:
+        with open(CONF) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip()] = v.strip().strip('"')
+    except FileNotFoundError:
+        pass
+    return cfg
+
+
+def write_conf(cfg):
+    os.makedirs(CONF_DIR, exist_ok=True)
+    lines = ["# voice-flow config — written by voice-flow-web/dashboard.",
+             "# Sourced by ~/.local/bin/voice-flow on every dictation."]
+    for k in CONF_KEYS:
+        if k in cfg:
+            lines.append("%s=%s" % (k, cfg[k]))
+    with open(CONF, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def engine():
+    reachable = None
+    for ip, name in HOSTS.items():
+        try:
+            urllib.request.urlopen("http://%s:8090/" % ip, timeout=0.5)
+            reachable = name
+            break
+        except urllib.error.HTTPError:
+            reachable = name  # server answered with an HTTP error = alive
+            break
+        except Exception:
+            continue
+    last = ""
+    try:
+        with open(BACKEND_STATE) as f:
+            last = f.read().strip()
+    except FileNotFoundError:
+        pass
+    if last.startswith("remote "):
+        ip = last.split()[1].split(":")[0]
+        last = HOSTS.get(ip, last)
+    elif last.startswith("local "):
+        last = "local fallback (%s)" % last[6:]
+    return {"reachable": reachable, "last_backend": last}
+
+
+def save_training(body):
+    kind, action = body.get("kind"), body.get("action")
+    if kind == "vocabulary":
+        terms = training()["vocabulary"]
+        term = (body.get("term") or "").strip()
+        if action == "add" and term and term not in terms:
+            terms.append(term)
+        elif action == "delete":
+            terms = [t for t in terms if t != term]
+        os.makedirs(CONF_DIR, exist_ok=True)
+        with open(VOCAB, "w") as f:
+            f.write("# Ormus Voice vocabulary — biases whisper + rewriter.\n")
+            f.write("\n".join(terms) + ("\n" if terms else ""))
+        return True
+    if kind == "substitution":
+        subs = training()["substitutions"]
+        heard = (body.get("heard") or "").strip()
+        canonical = (body.get("canonical") or "").strip()
+        if action == "add" and heard and canonical:
+            subs = [s for s in subs if s["heard"].lower() != heard.lower()]
+            subs.append({"heard": heard, "canonical": canonical})
+        elif action == "delete":
+            subs = [s for s in subs if s["heard"].lower() != heard.lower()]
+        os.makedirs(CONF_DIR, exist_ok=True)
+        with open(SUBS, "w") as f:
+            for s in subs:
+                f.write("%s\t%s\n" % (s["heard"], s["canonical"]))
+        return True
+    return False
+
+
+PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>voice-flow</title><style>
+:root{--bg:#0B0B0D;--card:#141318;--edge:#221F1A;--ink:#E8E4DA;--muted:#8A857A;
+--gold:#E0B258;--gold2:#D29E3D;--green:#7ABB9A;--copper:#CC6633;--silver:#ADBAC8}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;padding:28px;max-width:1060px;margin:0 auto}
+h1{font-size:20px;color:var(--gold);letter-spacing:1.5px;font-weight:800}
+h1 small{color:var(--muted);font-weight:400;letter-spacing:0;font-size:12px;margin-left:10px}
+h2{font-size:11px;color:#B6A98A;letter-spacing:1.5px;font-weight:700;margin:26px 0 10px;text-transform:uppercase}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--edge);border-radius:12px;padding:16px}
+.tile{flex:1;min-width:130px}
+.tile .v{font-size:26px;font-weight:800}
+.tile .l{color:var(--muted);font-size:11px;margin-top:2px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px}
+.ok{background:var(--green)}.bad{background:var(--copper)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{padding:7px 10px;text-align:left;border-top:1px solid var(--edge)}
+th{color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase;border-top:none}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.mut{color:var(--muted)} .gold{color:var(--gold)}
+button{background:#1B1A1F;color:#C9C3B6;border:1px solid #2A2720;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px}
+button:hover{background:#232027}
+button.pri{background:var(--gold2);color:#0B0B0D;font-weight:700;border-color:var(--gold2)}
+button.x{padding:2px 8px;font-size:12px}
+input,select{background:#1B1A1F;color:var(--ink);border:1px solid #2A2720;border-radius:8px;padding:6px 10px;font-size:13px}
+.seg{display:inline-flex;border:1px solid #2A2720;border-radius:8px;overflow:hidden}
+.seg button{border:none;border-radius:0}
+.seg button.on{background:var(--gold2);color:#0B0B0D;font-weight:700}
+svg text{fill:var(--muted);font-size:10px}
+#tip{position:fixed;pointer-events:none;background:#1B1A1F;border:1px solid #2A2720;border-radius:8px;
+padding:6px 10px;font-size:12px;display:none;z-index:9}
+.note{color:var(--muted);font-size:12px;margin-top:6px}
+.pair{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+a{color:var(--gold)}
+</style></head><body data-palette="#E0B258">
+<h1>voice-flow <small>local analytics · nothing leaves this machine</small></h1>
+
+<h2>Today</h2>
+<div class="row" id="tiles"></div>
+
+<h2>Engine</h2>
+<div class="card" id="engine"></div>
+
+<h2>Words per day — last 14 days</h2>
+<div class="card"><svg id="bars" width="100%" height="180"></svg></div>
+
+<h2>Median dictation speed — last 14 days</h2>
+<div class="card"><svg id="lat" width="100%" height="140"></svg>
+<div class="note">stop-press → text injected, in seconds. Lower is better.</div></div>
+
+<h2>Training</h2>
+<div class="row">
+<div class="card" style="flex:1;min-width:300px"><b class="gold">Vocabulary</b>
+<div class="note">Biases what whisper hears. Enroll with <span class="gold">voice-train</span>.</div>
+<table id="vocab"></table>
+<div class="pair"><input id="nv" placeholder="new term"><button class="pri" onclick="addVocab()">Add</button></div></div>
+<div class="card" style="flex:2;min-width:380px"><b class="gold">Learned substitutions</b>
+<div class="note">Deterministic heard → canonical fixes, applied before any LLM.</div>
+<table id="subs"></table>
+<div class="pair"><input id="nh" placeholder="heard"><input id="nc" placeholder="canonical">
+<button class="pri" onclick="addSub()">Add</button></div></div>
+</div>
+
+<h2>History</h2>
+<div class="card" id="hist"></div>
+
+<h2>Settings</h2>
+<div class="card" id="settings"></div>
+
+<div id="tip"></div>
+<script>
+const $=q=>document.querySelector(q);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let CFG={};
+async function j(u,opt){const r=await fetch(u,opt);return r.json()}
+function tile(v,l){return `<div class="card tile"><div class="v">${v}</div><div class="l">${l}</div></div>`}
+function tip(ev,html){const t=$("#tip");t.innerHTML=html;t.style.display="block";
+t.style.left=(ev.clientX+14)+"px";t.style.top=(ev.clientY-10)+"px"}
+function untip(){$("#tip").style.display="none"}
+
+function bars(svg,s){
+  const W=svg.clientWidth||900,H=180,P=26;svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const max=Math.max(...s.map(d=>d.words),1),bw=(W-2*P)/s.length;
+  let h="";
+  for(let i=0;i<s.length;i++){const d=s[i],bh=Math.max(d.words?3:0,(d.words/max)*(H-46));
+    const x=P+i*bw+2,y=H-26-bh;
+    h+=`<rect x="${x}" y="${y}" width="${bw-4}" height="${bh}" rx="4" fill="#E0B258"
+      data-d="${d.day}" data-w="${d.words}" data-c="${d.count}"/>`;
+    h+=`<text x="${P+i*bw+bw/2}" y="${H-10}" text-anchor="middle">${d.day.slice(8)}</text>`;
+    if(d.words&&(d.words===max||i===s.length-1))
+      h+=`<text x="${P+i*bw+bw/2}" y="${y-5}" text-anchor="middle" style="fill:#E8E4DA">${d.words}</text>`}
+  svg.innerHTML=h;
+  svg.querySelectorAll("rect").forEach(r=>{r.addEventListener("mousemove",ev=>
+    tip(ev,`<b>${r.dataset.d}</b><br>${r.dataset.w} words · ${r.dataset.c} dictations`));
+    r.addEventListener("mouseleave",untip)});
+}
+function line(svg,s){
+  const W=svg.clientWidth||900,H=140,P=26;svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const pts=s.map((d,i)=>({x:P+i*(W-2*P)/(s.length-1),v:d.med_ms/1000,day:d.day}));
+  const max=Math.max(...pts.map(p=>p.v),1);
+  let h="",path="";
+  pts.forEach((p,i)=>{p.y=H-24-(p.v/max)*(H-44);path+=(i?"L":"M")+p.x+","+p.y});
+  h+=`<path d="${path}" fill="none" stroke="#E0B258" stroke-width="2"/>`;
+  pts.forEach(p=>{if(p.v>0)h+=`<circle cx="${p.x}" cy="${p.y}" r="4" fill="#E0B258"
+    data-d="${p.day}" data-v="${p.v.toFixed(1)}"/>`});
+  h+=`<text x="${P}" y="${H-8}">${s[0].day.slice(5)}</text>
+      <text x="${W-P}" y="${H-8}" text-anchor="end">${s[s.length-1].day.slice(5)}</text>`;
+  svg.innerHTML=h;
+  svg.querySelectorAll("circle").forEach(c=>{c.addEventListener("mousemove",ev=>
+    tip(ev,`<b>${c.dataset.d}</b><br>${c.dataset.v}s median`));
+    c.addEventListener("mouseleave",untip)});
+}
+async function load(){
+  const s=await j("/api/summary");
+  $("#tiles").innerHTML=
+    tile(s.today_words,"words today")+tile(s.today_count,"dictations today")+
+    tile(s.today_avg_ms?(s.today_avg_ms/1000).toFixed(1)+"s":"—","avg speed today")+
+    tile(s.streak+"d","streak")+tile(s.total_words.toLocaleString(),"words all-time")+
+    tile("~"+s.minutes_saved+" min","typing time saved");
+  bars($("#bars"),s.series);line($("#lat"),s.series);
+  const e=await j("/api/engine");
+  $("#engine").innerHTML=`<span class="dot ${e.reachable?"ok":"bad"}"></span>`+
+    (e.reachable?`offload live — <b>${esc(e.reachable)}</b>`:"offload unreachable — <b>local fallback</b>")+
+    `<div class="note">last dictation served by: ${esc(e.last_backend||"—")}</div>`;
+  const t=await j("/api/training");
+  $("#vocab").innerHTML=t.vocabulary.map(v=>
+    `<tr><td>${esc(v)}</td><td style="width:1%"><button class="x" onclick="delVocab('${esc(v)}')">✕</button></td></tr>`).join("")
+    ||"<tr><td class='mut'>empty</td></tr>";
+  $("#subs").innerHTML="<tr><th>heard</th><th>canonical</th><th></th></tr>"+
+    (t.substitutions.map(x=>`<tr><td class="mut">${esc(x.heard)}</td><td>${esc(x.canonical)}</td>
+     <td style="width:1%"><button class="x" onclick="delSub('${esc(x.heard)}')">✕</button></td></tr>`).join("")
+    ||"<tr><td class='mut' colspan=3>none learned yet — run voice-train</td></tr>");
+  if(s.recent.length){
+    $("#hist").innerHTML="<table><tr><th>when</th><th>text</th><th>speed</th></tr>"+
+      s.recent.map(r=>`<tr><td class="mut" style="white-space:nowrap">${esc(String(r.ts).slice(5,16).replace("T"," "))}</td>
+      <td>${esc(r.text)}</td><td class="num mut">${(r.transcribe_ms/1000).toFixed(1)}s</td></tr>`).join("")+"</table>";
+  }else{
+    $("#hist").innerHTML=`<span class="mut">Transcript history is off — the log keeps counts only
+    (words, speed), never your words. Flip “Keep transcript history” below for a Wispr-style
+    history. Local file either way.</span>`;
+  }
+  CFG=await j("/api/config");renderSettings();
+}
+function renderSettings(){
+  const seg=(key,opts)=>`<div class="seg">`+opts.map(o=>
+    `<button class="${CFG[key]===o?"on":""}" onclick="setCfg('${key}','${o}')">${o}</button>`).join("")+`</div>`;
+  const sw=(key,label,on,off)=>`<div style="margin-top:10px">${label}
+    ${seg(key,[on,off])}</div>`;
+  $("#settings").innerHTML=
+    `<div>Injection method ${seg("VOICE_FLOW_METHOD",["auto","type","paste"])}</div>`+
+    `<div style="margin-top:10px">Local fallback model ${seg("VOICE_PASTE_MODEL",["base.en","medium.en"])}</div>`+
+    sw("VOICE_FLOW_REWRITE","AI rewrite","on","off")+
+    sw("VOICE_FLOW_PILL","Floating pill","1","0")+
+    sw("VOICE_FLOW_LOG_TEXT","Keep transcript history (local only)","1","0");
+}
+async function setCfg(k,v){CFG[k]=v;await j("/api/config",{method:"POST",body:JSON.stringify(CFG)});renderSettings();load()}
+async function post(b){await j("/api/training",{method:"POST",body:JSON.stringify(b)});load()}
+function addVocab(){const t=$("#nv").value.trim();if(t)post({kind:"vocabulary",action:"add",term:t});$("#nv").value=""}
+function delVocab(t){post({kind:"vocabulary",action:"delete",term:t})}
+function addSub(){const h=$("#nh").value.trim(),c=$("#nc").value.trim();
+  if(h&&c)post({kind:"substitution",action:"add",heard:h,canonical:c});$("#nh").value="";$("#nc").value=""}
+function delSub(h){post({kind:"substitution",action:"delete",heard:h})}
+load();setInterval(load,15000);
+</script></body></html>"""
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype="application/json"):
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/":
+            self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+        elif self.path == "/api/summary":
+            self._send(200, summary())
+        elif self.path == "/api/training":
+            self._send(200, training())
+        elif self.path == "/api/config":
+            self._send(200, read_conf())
+        elif self.path == "/api/engine":
+            self._send(200, engine())
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+        except json.JSONDecodeError:
+            self._send(400, {"error": "bad json"})
+            return
+        if self.path == "/api/config":
+            cfg = read_conf()
+            for k in CONF_KEYS:
+                if k in body:
+                    cfg[k] = re.sub(r"[^A-Za-z0-9._-]", "", str(body[k]))[:40]
+            write_conf(cfg)
+            self._send(200, cfg)
+        elif self.path == "/api/training":
+            ok = save_training(body)
+            self._send(200 if ok else 400, {"ok": ok})
+        else:
+            self._send(404, {"error": "not found"})
+
+
+def port_open():
+    with socket.socket() as s:
+        return s.connect_ex(("127.0.0.1", PORT)) == 0
+
+
+def main():
+    url = "http://127.0.0.1:%d/" % PORT
+    if "--serve" in sys.argv:
+        ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+        return
+    if not port_open():
+        t = threading.Thread(
+            target=lambda: ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever(),
+            daemon=False)
+        t.start()
+        subprocess.Popen(["xdg-open", url])
+        t.join()
+    else:
+        subprocess.Popen(["xdg-open", url])
+
+
+if __name__ == "__main__":
+    main()

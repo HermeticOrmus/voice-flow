@@ -257,7 +257,9 @@ class Dashboard(Gtk.Application):
         agent = Gtk.Button(label="Agent · Super+Shift+V")
         agent.set_hexpand(True)
         agent.connect("clicked", lambda *_: subprocess.Popen(["voice-flow", "agent"]))
-        row.append(go); row.append(agent)
+        web = Gtk.Button(label="Analytics")
+        web.connect("clicked", lambda *_: subprocess.Popen(["voice-flow-web"]))
+        row.append(go); row.append(agent); row.append(web)
         root.append(row)
 
         # Editors for the two user-owned tuning files.

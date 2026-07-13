@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HOME/.local/bin"
 mkdir -p "$BIN" "$HOME/.local/share/applications"
 
-for f in voice-flow voice-flow-pill voice-flow-dashboard vibecoding-record voice-agent-ollama voice-train voice-substitute; do
+for f in voice-flow voice-flow-pill voice-flow-dashboard voice-flow-web vibecoding-record voice-agent-ollama voice-train voice-substitute; do
     ln -sf "$HERE/bin/$f" "$BIN/$f"
     chmod +x "$HERE/bin/$f"
     echo "linked $f"
