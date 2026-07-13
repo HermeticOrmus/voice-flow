@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# vibecoding-record — Tuned microphone capture + processor for vibecoding.
+#
+# Produces a clean 16 kHz mono WAV optimized for whisper.cpp (and voice-flow).
+# Speech-specific processing: high-pass, noise reduction, compression, presence EQ.
+#
+# Modes:
+#   vibecoding-record [DURATION] [out.wav]     # record then tune (blocking)
+#   vibecoding-record --process in.wav [out]   # tune an existing capture (for post-processing)
+#
+# Env overrides:
+#   VOICE_PASTE_SECONDS   fallback duration
+#   VOICE_MIC             reserved for future per-mic device selection
+#
+# Pair with a directional USB mic (dynamic preferred) positioned close.
+# The processing chain stays light — whisper performs best on natural but clean speech.
+
+set -euo pipefail
+
+PROCESS_ONLY=0
+IN_WAV=""
+DURATION=""
+OUT=""
+
+# Parse args
+if [[ "${1:-}" == "--process" ]]; then
+    PROCESS_ONLY=1
+    IN_WAV="${2:-}"
+    OUT="${3:-}"
+    shift 2 || true
+else
+    DURATION="${1:-${VOICE_PASTE_SECONDS:-8}}"
+    OUT="${2:-}"
+fi
+
+if [[ -z "$OUT" ]]; then
+    OUT="$(mktemp -t vibecode-XXXXXX.wav)"
+    PRINT_PATH=1
+else
+    PRINT_PATH=0
+fi
+
+CAPTURE_RATE=48000
+CAPTURE_FMT="S16_LE"
+CHANNELS=1
+
+# Tuned filter chain for dictation / vibecoding.
+# Order matters: cleanup before creative shaping.
+FILTERS=(
+    "highpass=f=85"
+    "afftdn=nr=18:nf=-25"
+    "acompressor=threshold=-20dB:ratio=2.8:1:attack=5:release=55:makeup=1.8:knee=3dB"
+    "equalizer=f=280:t=h:width=1.0:g=-2"
+    "equalizer=f=2400:t=h:width=0.8:g=+3.2"
+    "equalizer=f=4100:t=h:width=0.6:g=+3.8"
+    "equalizer=f=7200:t=h:width=0.5:g=-1.5"
+    "dynaudnorm=f=120:g=12"
+    "aformat=sample_fmts=s16:channel_layouts=mono"
+    "aresample=16000"
+)
+FILTER_CHAIN=$(IFS=,; echo "${FILTERS[*]}")
+
+cleanup_tmp() { rm -f "$TMP_RAW" 2>/dev/null || true; }
+TMP_RAW=""
+
+if [[ "$PROCESS_ONLY" = "1" ]]; then
+    [[ -f "$IN_WAV" ]] || { echo "vibecoding-record: input not found: $IN_WAV" >&2; exit 1; }
+    ffmpeg -hide_banner -loglevel error -y \
+        -i "$IN_WAV" \
+        -af "$FILTER_CHAIN" \
+        -ar 16000 -ac 1 -f wav "$OUT"
+else
+    TMP_RAW="$(mktemp -t vibecode-raw-XXXXXX.raw)"
+    trap cleanup_tmp EXIT
+
+    # High quality capture (48 kHz gives filter headroom).
+    # Future: honor VOICE_MIC to pick specific alsa_input.* or pw node.
+    arecord -q -f "$CAPTURE_FMT" -r "$CAPTURE_RATE" -c "$CHANNELS" -t raw -d "$DURATION" "$TMP_RAW" 2>/dev/null || true
+
+    ffmpeg -hide_banner -loglevel error -y \
+        -f s16le -ar "$CAPTURE_RATE" -ac "$CHANNELS" -i "$TMP_RAW" \
+        -af "$FILTER_CHAIN" \
+        -ar 16000 -ac 1 -f wav "$OUT"
+fi
+
+[[ "$PRINT_PATH" = "1" ]] && printf '%s' "$OUT"
+

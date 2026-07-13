@@ -9,7 +9,8 @@ local LLM cleanup, a focus-proof feedback pill, and a native control panel.
 | Binary | What it is |
 |--------|-----------|
 | `voice-flow` | Orchestrator. Toggle record → transcribe (via `whisper-paste`) → inject with ydotool. Bound to **Super+V**. |
-| `whisper-paste` | The engine: arecord → silence gate → whisper.cpp (GPU) → hallucination filter → optional LLM rewrite. |
+| `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper.cpp (GPU) → hallucination filter → optional LLM rewrite. |
+| `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
 | `voice-flow-dashboard` | GTK4 control panel: live status, today's stats, method/model/rewrite/pill toggles, last transcript. |
 | `ormus-active-window` | Rust helper — prints the COSMIC focused window via `cosmic-toplevel-info-v1`. Powers the focus interlock. |

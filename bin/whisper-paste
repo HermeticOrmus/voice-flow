@@ -9,9 +9,10 @@
 #   fixed            — record VOICE_PASTE_SECONDS then auto-transcribe.
 #                      Original behavior; no second-press needed.
 #
-# Pipeline: arecord → silence gate (sox) → whisper.cpp → hallucination
-# filter → optional AI rewrite → stdout. The terminal bracketed-pastes
-# whatever this prints — empty stdout = no paste.
+# Pipeline: arecord (48 kHz) → silence gate (sox) → vibecoding mic tuning
+# (high-pass + denoise + comp + presence EQ → 16 kHz) → whisper.cpp →
+# hallucination filter → optional AI rewrite → stdout.
+# The terminal bracketed-pastes whatever this prints — empty stdout = no paste.
 #
 # IMPORTANT — GPU device selection on hybrid iGPU + dGPU systems:
 #   Vulkan enumerates the iGPU as device 0 (slower than CPU on most
@@ -137,6 +138,22 @@ transcribe_and_paste() {
             return 0
         fi
     fi
+
+    # Vibecoding mic tuning: high-pass, noise reduction, compressor, presence EQ.
+    # Always produces the 16 kHz mono file whisper.cpp expects.
+    local original_wav="$wav"
+    local cleaned
+    cleaned=$(mktemp -t vibecode-clean-XXXXXX.wav)
+    if command -v vibecoding-record >/dev/null 2>&1; then
+        vibecoding-record --process "$wav" "$cleaned" 2>/dev/null || cp -f "$wav" "$cleaned"
+    else
+        cp -f "$wav" "$cleaned"
+    fi
+    # Clean the raw capture (caller traps may also fire; harmless on missing file).
+    rm -f "$original_wav" 2>/dev/null || true
+    # Point everything downstream + our own cleanup at the tuned file.
+    trap 'rm -f "$cleaned" 2>/dev/null || true' RETURN
+    wav="$cleaned"
 
     # GPU flags.
     local backend_note gpu_flags
@@ -270,7 +287,7 @@ if [ "$MODE" = "toggle" ]; then
     # tokio::Command::output() blocks waiting for those FDs to drain
     # (which only happens when arecord finishes), so the second
     # Super+V press hits the in-flight guard and is silently ignored.
-    setsid -f arecord -q -d "$MAX_DURATION" -f S16_LE -r 16000 -c 1 \
+    setsid -f arecord -q -d "$MAX_DURATION" -f S16_LE -r 48000 -c 1 \
         -t wav "$wav" </dev/null >/dev/null 2>&1
     # setsid -f doesn't expose the child PID. Discover it by polling
     # the file we told arecord to write — the process opening that
@@ -298,6 +315,6 @@ wav=$(mktemp -t voice-XXXXXX.wav)
 trap 'rm -f "$wav"' EXIT
 note "$((DURATION * 1000 + 500))" "🎙 Recording" "${DURATION}s — speak now"
 beep message
-arecord -q -d "$DURATION" -f S16_LE -r 16000 -c 1 -t wav "$wav" 2>/dev/null
+arecord -q -d "$DURATION" -f S16_LE -r 48000 -c 1 -t wav "$wav" 2>/dev/null
 beep complete
 transcribe_and_paste "$wav"
