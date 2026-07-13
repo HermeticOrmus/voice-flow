@@ -229,7 +229,7 @@ def save_training(body):
 
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>voice-flow</title><style>
+<title>Ormus Voice</title><style>
 :root{--bg:#0B0B0D;--card:#141318;--edge:#221F1A;--ink:#E8E4DA;--muted:#8A857A;
 --gold:#E0B258;--gold2:#D29E3D;--green:#7ABB9A;--copper:#CC6633;--silver:#ADBAC8}
 *{box-sizing:border-box;margin:0}
@@ -264,7 +264,7 @@ padding:6px 10px;font-size:12px;display:none;z-index:9}
 .pair{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 a{color:var(--gold)}
 </style></head><body data-palette="#E0B258">
-<h1>voice-flow <small>local analytics · nothing leaves this machine</small></h1>
+<h1>ORMUS VOICE <small>voice.ormus.solutions · served from Sun · nothing leaves your machines</small></h1>
 
 <h2>Today</h2>
 <div class="row" id="tiles"></div>
