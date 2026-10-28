@@ -84,3 +84,54 @@ class VoiceTrain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Hosts(unittest.TestCase):
+    """Speech goes to Sun's :8093 first, then sg; the LLM steps go to sg."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, VOICE_PASTE_QUIET="1", VOICE_TRAIN_TAKES="1")
+        models = self.tmp / "data" / "ormus-voice" / "models"
+        models.mkdir(parents=True)
+        (models / "ggml-base.en.bin").write_bytes(b"model")
+        run = self.tmp / "run" / "ormus-voice"
+        run.mkdir(parents=True)
+        self.wav = silent_wav(self.tmp / "take.wav")
+        (run / "recording.state").write_text(f"{DEAD_PID}:{self.wav}")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_whisper_paste_asks_sun_first(self):
+        self.env.update(VOICE_PASTE_PHASE="stop", STUB_CURL_OUT="Hi.")
+        subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
+        self.assertIn("http://127.0.0.1:8093/inference", log_lines(self.env, "curl")[0])
+
+    def test_voice_train_asks_sun_first(self):
+        self.env["STUB_CURL_OUT"] = "Hi."
+        subprocess.run([str(BIN / "voice-train"), "Embry0"], env=self.env, capture_output=True, text=True)
+        self.assertIn("http://127.0.0.1:8093/inference", log_lines(self.env, "curl")[0])
+
+    def test_rewrite_runs_qwen_on_sg(self):
+        self.env["STUB_OLLAMA_RESPONSE"] = '{"response":"Hello there."}'
+        r = subprocess.run([str(BIN / "voice-rewrite-ollama")], input="um hello there",
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "Hello there.")
+        log = "\n".join(log_lines(self.env, "curl"))
+        self.assertTrue(log.startswith("-s --connect-timeout 0.4 -m 1 http://10.10.90.145:11434/api/version"), log[:120])
+        self.assertIn('"model": "qwen3:32b"', log)
+        self.assertIn('"think": false', log)
+
+    def test_rewrite_passes_through_when_no_host_answers(self):
+        self.env["STUB_CURL_EXIT"] = "7"
+        r = subprocess.run([str(BIN / "voice-rewrite-ollama")], input="um hello there",
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "um hello there")
+
+    def test_agent_asks_sg_first(self):
+        self.env["STUB_OLLAMA_RESPONSE"] = '{"response":"42"}'
+        r = subprocess.run([str(BIN / "voice-agent-ollama")], input="what is six times seven",
+                           env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "42")
+        self.assertIn("http://10.10.90.145:11434/api/version", log_lines(self.env, "curl")[0])
