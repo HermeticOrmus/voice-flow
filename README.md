@@ -32,6 +32,31 @@ runtime) precisely so the portal's engine card syncs.
 | `voice-rewrite-ollama` / `voice-rewrite-claude` | Optional Wispr-style AI cleanup commands. |
 | `voice-agent-ollama` | Agent mode: the transcript is an instruction, stdout is the answer. `VOICE_AGENT_MODEL` picks the model (default llama3.2:3b on mini; try `ornith-9b` for harder asks). |
 
+## voice-ideas: the listener for idle thoughts
+
+Ormus, while he games: "I can just speak into the mic, I can turn some process on, and that hears
+everything that I'm saying ... talking a little bit, and then stopping, and then starting."
+
+`voice-ideas` listens on the default source, cuts speech at a 1.5 s pause (silero VAD, ONNX on
+onnxruntime, one thread), sends each utterance to whisper-server, and appends one JSON line per
+utterance to `~/.local/share/ormus-voice/ideas/utterances.jsonl`. It never writes into a window
+(that is `voice-flow`), it keeps no audio (a clip lives in memory until whisper answers, or in
+`ideas/spool/` while no server answers), and it drops whatever is spoken while a Super+H dictation
+records. The user unit `voice-ideas.service` is installed by `install.sh` and never enabled: start
+it with `systemctl --user start voice-ideas` (or from the Sun board), stop it the same way.
+
+| Conf key (env, then `voice-flow.conf`) | Default | Meaning |
+|---|---|---|
+| `VOICE_IDEAS_SOURCE` | the default source | PipeWire source name (`pactl list sources short`) |
+| `VOICE_IDEAS_HOSTS` | Sun :8093, then sg | whisper-server hosts, first that answers wins |
+| `VOICE_IDEAS_PAUSE_MS` | 1500 | the pause that ends an utterance |
+
+`voice-ideas --replay f.raw` runs the same loop over a raw s16le 16 kHz mono file; `--drain`
+transcribes the spool. The mechanism was settled by the spike in `docs/spikes/vad-game-capture.md`
+(branch `spike/vad-game-capture`): silero cut 0 game segments in 310 s of a loud room and 12 of 12
+of his utterances on the DJI; the thread pools must be pinned or they spin a whole core; whisper's
+`avg_logprob` under -1.5 marks junk. `./check.sh` runs the tests (uv supplies the packages).
+
 ## Per-app profiles
 
 `~/.config/ormus-voice/app-profiles.conf` maps focused `app_id` globs to

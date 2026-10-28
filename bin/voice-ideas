@@ -1,0 +1,391 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["onnxruntime>=1.20", "numpy>=2"]
+# ///
+"""voice-ideas: listen while Ormus games, cut what he says at pauses, one log line per utterance.
+
+    voice-ideas                  listen on the default source until stopped (the user unit runs this)
+    voice-ideas --replay f.raw   the same loop over a raw s16le 16 kHz mono file, then exit
+    voice-ideas --drain          transcribe what waits in the spool, then exit
+
+Ormus: "I can just speak into the mic, I can turn some process on, and that hears everything that
+I'm saying ... talking a little bit, and then stopping, and then starting."
+
+Pipeline: parec (16 kHz mono) -> silero VAD (ONNX, one thread) -> a cut at a 1.5 s pause -> WAV in
+memory -> whisper-server /transcribe (the vocabulary as its prompt) -> filter -> utterances.jsonl.
+
+Settled by the spike (docs/spikes/vad-game-capture.md): silero cut 0 game segments in 310 s of a
+loud room and 12 of 12 of his on the DJI; a 1.5 s pause gives whisper whole sentences; the thread
+pools must be pinned (unpinned they spin a whole core at the live cadence); whisper's avg_logprob
+under -1.5 marks junk, while no_speech_prob and language do not.
+
+What it never does: write into a window (that is voice-flow); keep audio (a clip lives in memory
+until whisper answers, or in the spool while no server answers); log while a Super+H dictation
+records (voice-flow's recording.state); start on login (the unit ships dark).
+
+Conf (env wins over ~/.config/ormus-voice/voice-flow.conf):
+  VOICE_IDEAS_SOURCE    PipeWire source name (default: the default source)
+  VOICE_IDEAS_HOSTS     whisper-server host:port list, first that answers wins
+  VOICE_IDEAS_PAUSE_MS  the pause that ends an utterance (default 1500)
+"""
+from __future__ import annotations
+
+import os
+
+# Pinned before numpy loads: an unpinned pool spins a whole core while it waits for the next
+# 32 ms chunk (measured: cpu/wall 0.94 unpinned, 0.005 pinned).
+for _k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_k, "1")
+
+import argparse
+import hashlib
+import io
+import json
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+import uuid
+import wave
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Iterable, Iterator
+
+import numpy as np
+
+SR = 16000
+CHUNK = 512            # 32 ms, what silero v5 takes at 16 kHz
+CTX = 64               # the samples silero wants in front of each chunk
+THRESH, NEG = 0.5, 0.35
+MIN_SPEECH_MS, PAD_MS, MAX_SPEECH_S = 250, 150, 30
+PAUSE_MS_DEFAULT = 1500
+LOGPROB_FLOOR = -1.5   # junk sat at -5.9 and -6.1, his speech at -0.3 to -1.0
+HALLUCINATED = {"", "you", "thank you", "thanks for watching", "bye", "okay", "thank you for watching", "music", "the", "subscribe"}
+REPEATS = re.compile(r"\b(\w+)\b([\s,-]+\1\b){3,}")
+
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "ormus-voice"
+CONF = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "ormus-voice"
+MODEL = DATA / "models" / "silero_vad.onnx"
+MODEL_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
+MODEL_SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+IDEAS = DATA / "ideas"
+LOG = IDEAS / "utterances.jsonl"
+SPOOL = IDEAS / "spool"
+VOCAB = CONF / "vocabulary.txt"
+FLAG = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "ormus-voice" / "recording.state"
+HOSTS_DEFAULT = "127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093"
+
+
+def say(msg: str) -> None:
+    print(f"voice-ideas: {msg}", flush=True)
+
+
+def conf(key: str, default: str) -> str:
+    """env first, then KEY=VALUE lines of voice-flow.conf (the dashboard writes it)."""
+    if os.environ.get(key):
+        return os.environ[key]
+    try:
+        for line in (CONF / "voice-flow.conf").read_text().splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return default
+
+
+def vocabulary() -> str:
+    try:
+        return " ".join(l.strip() for l in VOCAB.read_text().splitlines() if l.strip() and not l.startswith("#"))
+    except OSError:
+        return ""
+
+
+def ensure_model(path: Path = MODEL) -> Path:
+    """The silero ONNX model, fetched once and checked against its pinned sha256."""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        say(f"fetching the VAD model into {path}")
+        with urllib.request.urlopen(MODEL_URL, timeout=60) as r:
+            path.write_bytes(r.read())
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != MODEL_SHA256:
+        raise SystemExit(f"voice-ideas: {path} has sha256 {digest}, expected {MODEL_SHA256}: delete it and run again")
+    return path
+
+
+class Vad:
+    """silero v5 on onnxruntime, one thread, streaming: prob(chunk) per 512 samples."""
+
+    def __init__(self, model: Path) -> None:
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = so.inter_op_num_threads = 1
+        self.sess = ort.InferenceSession(str(model), so, providers=["CPUExecutionProvider"])
+        self.reset()
+
+    def reset(self) -> None:
+        self.state = np.zeros((2, 1, 128), dtype=np.float32)
+        self.ctx = np.zeros(CTX, dtype=np.float32)
+
+    def prob(self, chunk: np.ndarray) -> float:
+        x = chunk.astype(np.float32) / 32768.0
+        out, self.state = self.sess.run(None, {"input": np.concatenate([self.ctx, x])[None, :], "state": self.state,
+                                               "sr": np.array(SR, dtype=np.int64)})
+        self.ctx = x[-CTX:]
+        return float(out[0, 0])
+
+
+class Cutter:
+    """One utterance = speech, then a pause of pause_ms. feed() returns a finished (t0, t1, pcm) or None."""
+
+    def __init__(self, pause_ms: int = PAUSE_MS_DEFAULT) -> None:
+        self.pause_s = pause_ms / 1000
+        self.pad = max(1, round(PAD_MS / 1000 * SR / CHUNK))   # chunks of lead-in kept before speech
+        self.reset()
+
+    def reset(self) -> None:
+        self.ring: deque[tuple[float, np.ndarray]] = deque(maxlen=self.pad)
+        self.buf: list[tuple[float, np.ndarray]] = []
+        self.start = self.last = None
+
+    def feed(self, t: float, prob: float, chunk: np.ndarray) -> tuple[float, float, np.ndarray] | None:
+        if self.start is None:
+            self.ring.append((t, chunk))
+            if prob >= THRESH:
+                self.buf, self.start, self.last = list(self.ring), self.ring[0][0], t
+            return None
+        self.buf.append((t, chunk))
+        if prob >= THRESH:
+            self.last = t
+            if t - self.start > MAX_SPEECH_S:
+                return self.finish(t)
+            return None
+        if prob < NEG and t - self.last >= self.pause_s:
+            return self.finish(self.last + self.pad * CHUNK / SR)
+        return None
+
+    def finish(self, end: float) -> tuple[float, float, np.ndarray] | None:
+        kept = [(t, c) for t, c in self.buf if t < end]
+        t0, t1 = self.start, kept[-1][0] + CHUNK / SR
+        pcm = np.concatenate([c for _, c in kept])
+        self.reset()
+        return (t0, t1, pcm) if (t1 - t0) * 1000 >= MIN_SPEECH_MS else None
+
+    def flush(self) -> tuple[float, float, np.ndarray] | None:
+        return self.finish(self.last + CHUNK / SR) if self.start is not None else None
+
+
+def chunks_of(pcm: np.ndarray) -> Iterator[tuple[float, np.ndarray]]:
+    for i in range(0, len(pcm) - CHUNK + 1, CHUNK):
+        yield i / SR, pcm[i:i + CHUNK]
+
+
+def cut(pcm: np.ndarray, vad: Vad, pause_ms: int = PAUSE_MS_DEFAULT) -> list[tuple[float, float, np.ndarray]]:
+    """Every utterance in a whole recording (tests, --replay)."""
+    cutter, out = Cutter(pause_ms), []
+    for t, chunk in chunks_of(pcm):
+        seg = cutter.feed(t, vad.prob(chunk), chunk)
+        if seg:
+            out.append(seg)
+    seg = cutter.flush()
+    return out + [seg] if seg else out
+
+
+def keep(text: str, lp: float) -> bool:
+    """Speech worth a line: not a known silence word, not a repeat loop, not a low-confidence decode."""
+    low = re.sub(r"[.,!?¿¡]", "", text.lower()).strip()
+    return low not in HALLUCINATED and not REPEATS.search(low) and lp >= LOGPROB_FLOOR
+
+
+def wav_bytes(pcm: np.ndarray) -> bytes:
+    b = io.BytesIO()
+    with wave.open(b, "wb") as w:
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(SR), w.writeframes(pcm.tobytes())
+    return b.getvalue()
+
+
+def reachable(host: str, timeout: float = 0.5) -> bool:
+    h, _, p = host.rpartition(":")
+    try:
+        socket.create_connection((h, int(p)), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def post_transcribe(host: str, wav: bytes, prompt: str, timeout: float = 30.0) -> dict:
+    boundary = "voiceideas" + uuid.uuid4().hex
+    head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"initial_prompt\"\r\n\r\n{prompt}\r\n"
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"u.wav\"\r\n"
+            f"Content-Type: audio/wav\r\n\r\n").encode()
+    body = head + wav + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(f"http://{host}/transcribe", data=body,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def transcriber(hosts: list[str], prompt: str) -> Callable[[np.ndarray], dict | None]:
+    """pcm -> {text, lp, backend, ms}, or None when no whisper host answers (the caller spools)."""
+    def run(pcm: np.ndarray) -> dict | None:
+        wav = wav_bytes(pcm)
+        for host in hosts:
+            if not reachable(host):
+                continue
+            t0 = time.monotonic()
+            try:
+                doc = post_transcribe(host, wav, prompt)
+            except (OSError, ValueError) as e:
+                say(f"{host} failed: {e}")
+                continue
+            lps = [s.get("avg_logprob", 0.0) for s in doc.get("segments") or []]
+            return {"text": (doc.get("text") or "").strip(), "lp": round(sum(lps) / len(lps), 3) if lps else 0.0,
+                    "backend": host, "ms": int((time.monotonic() - t0) * 1000)}
+        return None
+    return run
+
+
+class Store:
+    """The utterance log (append-only, one JSON line each) and the spool of clips no server answered."""
+
+    def __init__(self, log: Path = LOG, spool: Path = SPOOL) -> None:
+        self.log_path, self.spool_dir = log, spool
+
+    def log(self, row: dict) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open("a") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def spool(self, pcm: np.ndarray, at: float, dur: float) -> Path:
+        self.spool_dir.mkdir(parents=True, exist_ok=True)
+        path = self.spool_dir / f"u-{int(at * 1000)}_{dur:.2f}.wav"
+        path.write_bytes(wav_bytes(pcm))
+        return path
+
+    def waiting(self) -> list[Path]:
+        return sorted(self.spool_dir.glob("u-*.wav")) if self.spool_dir.exists() else []
+
+    def drain(self, transcribe: Callable[[np.ndarray], dict | None]) -> int:
+        """Oldest first; stops at the first clip no server answers. Returns how many landed."""
+        landed = 0
+        for path in self.waiting():
+            ms, dur = path.stem[2:].split("_")
+            with wave.open(str(path), "rb") as w:
+                pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+            r = transcribe(pcm)
+            if r is None:
+                break
+            self.take(r, int(ms) / 1000, float(dur), spooled=True)
+            path.unlink()
+            landed += 1
+        return landed
+
+    def take(self, r: dict, at: float, dur: float, spooled: bool = False) -> bool:
+        """A transcript in: logged when it is speech worth a line, else dropped. Returns whether it landed."""
+        if not keep(r["text"], r["lp"]):
+            say(f"dropped (junk): {r['text'][:60]!r} lp {r['lp']}")
+            return False
+        iso = lambda s: datetime.fromtimestamp(s, timezone.utc).astimezone().isoformat(timespec="seconds")  # noqa: E731
+        row = {"id": f"u-{int(at * 1000)}", "t0": iso(at), "t1": iso(at + dur), "dur": round(dur, 2),
+               "text": r["text"], "lp": r["lp"], "backend": r["backend"]}
+        if spooled:
+            row["spooled"] = True
+        self.log(row)
+        say(f"utterance {dur:.1f} s -> {r['text'][:80]!r} (lp {r['lp']}, {r['backend']}, {r.get('ms', 0)} ms)")
+        return True
+
+
+def process(chunks: Iterable[tuple[float, np.ndarray]], vad: Vad, transcribe: Callable[[np.ndarray], dict | None],
+            store: Store, dictation: Callable[[float], bool], clock: Callable[[float], float],
+            pause_ms: int = PAUSE_MS_DEFAULT) -> None:
+    """The loop: a chunk in, maybe a line out. dictation(t) true drops the speech in flight (voice-flow
+    has the mic); clock(t) maps stream seconds to epoch seconds."""
+    cutter, skipping = Cutter(pause_ms), False
+
+    def handle(seg: tuple[float, float, np.ndarray]) -> None:
+        t0, t1, pcm = seg
+        at, dur = clock(t0), t1 - t0
+        r = transcribe(pcm)
+        if r is None:
+            say(f"no whisper host answered: spooled {store.spool(pcm, at, dur).name}")
+            return
+        store.take(r, at, dur)
+        if store.waiting():
+            landed = store.drain(transcribe)
+            if landed:
+                say(f"spool drained: {landed} landed")
+
+    for t, chunk in chunks:
+        if dictation(t):
+            if not skipping:
+                say("dictation in flight: not listening")
+            skipping, _ = True, cutter.reset()
+            vad.prob(chunk)
+            continue
+        skipping = False
+        seg = cutter.feed(t, vad.prob(chunk), chunk)
+        if seg:
+            handle(seg)
+    seg = cutter.flush()
+    if seg:
+        handle(seg)
+
+
+def parec_chunks(source: str, proc_holder: list) -> Iterator[tuple[float, np.ndarray]]:
+    cmd = ["parec", "--format=s16le", f"--rate={SR}", "--channels=1", "--raw"] + ([f"--device={source}"] if source else [])
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    proc_holder.append(proc)
+    n = 0
+    while True:
+        buf = b""
+        while len(buf) < CHUNK * 2:
+            more = proc.stdout.read(CHUNK * 2 - len(buf))
+            if not more:
+                return
+            buf += more
+        yield n * CHUNK / SR, np.frombuffer(buf, dtype=np.int16)
+        n += 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="listen while gaming; one log line per utterance")
+    ap.add_argument("--replay", metavar="RAW", help="run over a raw s16le 16 kHz mono file, then exit")
+    ap.add_argument("--drain", action="store_true", help="transcribe what waits in the spool, then exit")
+    args = ap.parse_args(argv)
+    hosts = conf("VOICE_IDEAS_HOSTS", HOSTS_DEFAULT).split()
+    pause_ms = int(conf("VOICE_IDEAS_PAUSE_MS", str(PAUSE_MS_DEFAULT)))
+    store, transcribe = Store(), transcriber(hosts, vocabulary())
+    if args.drain:
+        say(f"spool: {len(store.waiting())} waiting, {store.drain(transcribe)} landed")
+        return 0
+    vad = Vad(ensure_model())
+    if args.replay:
+        pcm = np.frombuffer(Path(args.replay).read_bytes(), dtype=np.int16)
+        start = time.time() - len(pcm) / SR
+        process(chunks_of(pcm), vad, transcribe, store, dictation=lambda t: FLAG.exists(), clock=lambda t: start + t,
+                pause_ms=pause_ms)
+        return 0
+    source = conf("VOICE_IDEAS_SOURCE", "")
+    procs: list[subprocess.Popen] = []
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    say(f"listening (source {source or 'default'}, hosts {' '.join(hosts)}, pause {pause_ms} ms, log {LOG})")
+    start = time.time()
+    try:
+        process(parec_chunks(source, procs), vad, transcribe, store, dictation=lambda t: FLAG.exists(),
+                clock=lambda t: start + t, pause_ms=pause_ms)
+    except KeyboardInterrupt:
+        say("stopping")
+    finally:
+        for p in procs:
+            p.terminate()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

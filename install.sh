@@ -12,6 +12,15 @@ for f in voice-flow voice-flow-pill voice-flow-dashboard voice-flow-web vibecodi
     echo "linked $f"
 done
 
+# voice-ideas (the listener): its own link and its user unit, installed but never enabled.
+# Start it with `systemctl --user start voice-ideas` or from the Sun board.
+ln -sf "$HERE/bin/voice-ideas" "$BIN/voice-ideas"
+chmod +x "$HERE/bin/voice-ideas"
+mkdir -p "$HOME/.config/systemd/user"
+cp -n "$HERE/systemd/voice-ideas.service" "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload 2>/dev/null || true
+echo "installed voice-ideas (unit present, not enabled)"
+
 # Default per-app profiles — only if the user hasn't customized one.
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice"
 mkdir -p "$CONF_DIR"
