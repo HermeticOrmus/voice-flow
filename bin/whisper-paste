@@ -14,9 +14,11 @@
 # hallucination filter → optional AI rewrite → stdout.
 # The terminal bracketed-pastes whatever this prints — empty stdout = no paste.
 #
-# IMPORTANT — GPU device selection on hybrid iGPU + dGPU systems:
-#   Vulkan enumerates the iGPU as device 0 (slower than CPU on most
-#   workloads). Set VOICE_PASTE_GPU_DEVICE=1 to force the dGPU.
+# IMPORTANT — the local whisper-cli fallback must never run on the iGPU.
+#   Sun's iGPU (i915) drives the displays; sustained inference there
+#   hangs the desktop. The remote whisper-server answers first; the
+#   local fallback stays CPU-only (VOICE_PASTE_GPU=0). Vulkan device 0
+#   is the iGPU.
 #
 # Tunables (env):
 #   VOICE_PASTE_MODE         "toggle" (default) or "fixed"
@@ -26,8 +28,10 @@
 #   VOICE_PASTE_MODEL_PATH   explicit ggml model path (overrides MODEL)
 #   VOICE_PASTE_RMS_MIN      silence-gate threshold (default 0.005)
 #   VOICE_PASTE_THREADS      whisper-cli thread count (default: nproc)
-#   VOICE_PASTE_GPU          "1" use GPU, "0" CPU only (default: 1)
-#   VOICE_PASTE_GPU_DEVICE   Vulkan device index (default: 1 → dGPU)
+#   VOICE_PASTE_GPU          "1" use GPU, "0" CPU only (default: 0 —
+#                            local fallback must never touch the iGPU)
+#   VOICE_PASTE_GPU_DEVICE   Vulkan device index (default: 1 → dGPU;
+#                            device 0 is the iGPU, never use it)
 #   VOICE_PASTE_REMOTE       "on" (default) try remote whisper-server
 #                            first, "off" local-only
 #   VOICE_PASTE_REMOTE_HOSTS space-separated host:port list, first
@@ -47,7 +51,7 @@ MAX_DURATION=${VOICE_PASTE_MAX_SECONDS:-120}
 MODEL_NAME=${VOICE_PASTE_MODEL:-base.en}
 RMS_MIN=${VOICE_PASTE_RMS_MIN:-0.005}
 THREADS=${VOICE_PASTE_THREADS:-$(nproc)}
-GPU=${VOICE_PASTE_GPU:-1}
+GPU=${VOICE_PASTE_GPU:-0}
 GPU_DEVICE=${VOICE_PASTE_GPU_DEVICE:-1}
 
 # Remote whisper-server offload (corvin-mini). medium.en sits resident
@@ -145,7 +149,10 @@ transcribe_and_paste() {
     # Silence gate.
     if command -v sox >/dev/null 2>&1; then
         local rms
-        rms=$(sox "$wav" -n stat 2>&1 | awk -F'[: ]+' '/RMS *amplitude/{print $4; exit}')
+        # sox prints "RMS     amplitude:     0.0204" with no leading space,
+        # so [: ]+ splits it into RMS/amplitude/value — the value is $3.
+        # This read $4 (always empty), which disabled the gate entirely.
+        rms=$(sox "$wav" -n stat 2>&1 | awk -F'[: ]+' '/RMS *amplitude/{print $3; exit}')
         if [ -n "$rms" ] && awk -v r="$rms" -v m="$RMS_MIN" 'BEGIN{exit !(r < m)}'; then
             note 2500 "🤫 Silent" "no speech detected (RMS=$rms)"
             clear_notify_state
@@ -177,24 +184,31 @@ transcribe_and_paste() {
     # backend.state tells the dashboard which engine served the last
     # dictation (runtime dir — it resets on reboot, like the rest).
     local backend_state="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/backend.state"
-    local trimmed="" host
+    local trimmed="" host remote_served=0
     if [ "$REMOTE" = "on" ]; then
         for host in $REMOTE_HOSTS; do
-            note 30000 "✍️ Transcribing" "whisper-server @ $host (medium.en$vocab_note)…"
-            trimmed=$(curl -sSf --connect-timeout 0.4 -m "$REMOTE_TIMEOUT" \
+            note 30000 "✍️ Transcribing" "whisper-server @ $host$vocab_note…"
+            # Keep curl's exit status: a host that ANSWERS has served the
+            # request even when the transcript is empty (VAD trimmed pure
+            # silence). Treating empty-but-successful as failure used to
+            # fall through to the local GPU path on every silent take.
+            local raw rc=0
+            raw=$(curl -sSf --connect-timeout 0.4 -m "$REMOTE_TIMEOUT" \
                 -F "file=@$wav" -F response_format=text \
                 ${VOCAB:+-F "prompt=$VOCAB"} \
-                "http://$host/inference" 2>/dev/null \
-                | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
-            if [ -n "$trimmed" ]; then
+                "http://$host/inference" 2>/dev/null) || rc=$?
+            if [ "$rc" = "0" ]; then
+                trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                remote_served=1
                 printf 'remote %s' "$host" > "$backend_state" 2>/dev/null || true
                 break
             fi
         done
     fi
 
-    # Local fallback: whisper-cli, cold-start per call.
-    if [ -z "$trimmed" ]; then
+    # Local fallback: whisper-cli, cold-start per call. Only when no remote
+    # host answered at all — never merely because the transcript was empty.
+    if [ "$remote_served" = "0" ]; then
         local backend_note gpu_flags
         if [ "$GPU" = "1" ]; then
             backend_note="GPU dev $GPU_DEVICE"

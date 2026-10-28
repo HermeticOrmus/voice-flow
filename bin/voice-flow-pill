@@ -25,18 +25,35 @@ import os
 import sys
 
 # gtk4-layer-shell MUST be loaded before libwayland-client or the layer
-# surface silently fails to initialize. Under PyGObject, GTK loads
-# libwayland first, so the sanctioned fix is to LD_PRELOAD the layer-
-# shell lib — which only takes effect at process start. So we set the
-# env and re-exec ourselves once (guarded against an exec loop).
-_PRELOAD = "/usr/local/lib/x86_64-linux-gnu/libgtk4-layer-shell.so.0"
-_TYPELIB = "/usr/local/lib/x86_64-linux-gnu/girepository-1.0"
+# surface silently fails to initialize and the pill maps as a normal
+# window. Under PyGObject, GTK loads libwayland first, so LD_PRELOAD
+# the layer-shell lib — which only takes effect at process start. Set
+# the env and re-exec once (guarded against an exec loop).
+def _first_existing(paths):
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return ""
+
+
+_PRELOAD = _first_existing((
+    "/usr/lib/libgtk4-layer-shell.so.0",
+    "/usr/lib/x86_64-linux-gnu/libgtk4-layer-shell.so.0",
+    "/usr/local/lib/x86_64-linux-gnu/libgtk4-layer-shell.so.0",
+    "/usr/lib/liblayer-shell-preload.so",
+))
+_TYPELIB = _first_existing((
+    "/usr/lib/girepository-1.0",
+    "/usr/lib/x86_64-linux-gnu/girepository-1.0",
+    "/usr/local/lib/x86_64-linux-gnu/girepository-1.0",
+))
 if os.environ.get("_VFP_PRELOADED") != "1":
     os.environ["_VFP_PRELOADED"] = "1"
-    if os.path.exists(_PRELOAD):
+    if _PRELOAD:
         pre = os.environ.get("LD_PRELOAD", "")
         os.environ["LD_PRELOAD"] = _PRELOAD + ((":" + pre) if pre else "")
-    os.environ["GI_TYPELIB_PATH"] = _TYPELIB + ":" + os.environ.get("GI_TYPELIB_PATH", "")
+    if _TYPELIB:
+        os.environ["GI_TYPELIB_PATH"] = _TYPELIB + ":" + os.environ.get("GI_TYPELIB_PATH", "")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 import io
