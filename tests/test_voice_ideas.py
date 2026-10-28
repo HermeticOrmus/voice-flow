@@ -108,8 +108,10 @@ class Process(unittest.TestCase):
         vi = self.vi
         store = vi.Store(self.log, self.spool)
         flag_on = lambda t: flag_during is not None and flag_during[0] <= t <= flag_during[1]  # noqa: E731
+        self.closed = 0
         vi.process(vi.chunks_of(self.pcm), vi.Vad(vi.ensure_model()), transcriber, store,
-                   dictation=lambda t: flag_on(t), clock=lambda t: 1_700_000_000.0 + t)
+                   dictation=lambda t: flag_on(t), clock=lambda t: 1_700_000_000.0 + t,
+                   on_burst_closed=lambda: setattr(self, "closed", self.closed + 1))
         return store
 
     def test_one_line_per_sentence_in_order(self):
@@ -121,6 +123,7 @@ class Process(unittest.TestCase):
             self.assertEqual(set(r) >= {"id", "t0", "t1", "dur", "text", "lp", "backend"}, True, r)
             self.assertGreater(r["dur"], 0.5)
         self.assertEqual(len(fake.calls), len(PLANTED))
+        self.assertEqual(self.closed, 1, "the 17 s fixture holds one burst, closed at the end")
 
     def test_a_dictation_in_flight_drops_that_speech(self):
         mid = PLANTED[1]
@@ -131,6 +134,7 @@ class Process(unittest.TestCase):
     def test_server_down_spools_then_drains(self):
         self.run_loop(Fake(down=True))
         self.assertEqual(self.lines(), [])
+        self.assertEqual(self.closed, 0, "nothing landed, so no burst to sort")
         self.assertEqual(len(list(self.spool.glob("*.wav"))), len(PLANTED))
         store = self.vi.Store(self.log, self.spool)
         store.drain(Fake([{"text": p["text"], "lp": -0.4, "backend": "fake"} for p in PLANTED]))
