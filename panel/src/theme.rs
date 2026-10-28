@@ -87,6 +87,8 @@ pub fn css(t: &Theme) -> String {
          list, row {{ background: {raised}; color: {ink}; }}
          button {{ background: {raised}; color: {ink}; }}
          button:checked {{ background: {accent}; color: {ground}; }}
+         button.quiet:checked {{ background: {ink}; color: {ground}; }}
+         switch:checked {{ background: {muted}; }}
          .warn {{ color: {warn}; }}
          .ok {{ color: {ok}; }}
          .state {{ color: {muted}; font-size: 13px; }}
@@ -128,5 +130,8 @@ mod tests {
         let css = css(&from_map(&parse(ORMUS_SUN)));
         assert_eq!(css.matches("#FFD700").count(), 1);
         assert!(css.contains("button:checked { background: #FFD700"));
+        // every other chosen control reads in ink or the muted wash, never gold
+        assert!(css.contains("button.quiet:checked { background: #F5E6C8"));
+        assert!(css.contains("switch:checked { background: #8A7434"));
     }
 }

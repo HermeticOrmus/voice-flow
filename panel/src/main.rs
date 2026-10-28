@@ -437,6 +437,7 @@ fn controls_row() -> Box {
     let mut group: Option<ToggleButton> = None;
     for value in ["auto", "type", "paste"] {
         let button = ToggleButton::with_label(value);
+        button.add_css_class("quiet"); // the tone keeps the one gold on this view
         if let Some(first) = &group {
             button.set_group(Some(first));
         }
