@@ -160,14 +160,33 @@ def read_conf():
 
 
 def write_conf(cfg):
+    """Update the keys this page owns in place; every other line stays.
+
+    The conf is shared: the panel writes VOICE_FLOW_EXPRESS, the listener
+    reads VOICE_IDEAS_*. Rewriting from a fixed list dropped them.
+    """
     os.makedirs(CONF_DIR, exist_ok=True)
-    lines = ["# voice-flow config — written by voice-flow-web/dashboard.",
-             "# Sourced by ~/.local/bin/voice-flow on every dictation."]
+    try:
+        with open(CONF) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = ["# voice-flow config — written by voice-flow-web/dashboard.",
+                 "# Sourced by ~/.local/bin/voice-flow on every dictation."]
+    seen = set()
+    out = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+        if key in CONF_KEYS and key in cfg:
+            if key not in seen:
+                out.append("%s=%s" % (key, cfg[key]))
+                seen.add(key)
+            continue
+        out.append(line)
     for k in CONF_KEYS:
-        if k in cfg:
-            lines.append("%s=%s" % (k, cfg[k]))
+        if k in cfg and k not in seen:
+            out.append("%s=%s" % (k, cfg[k]))
     with open(CONF, "w") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write("\n".join(out) + "\n")
 
 
 def engine():
