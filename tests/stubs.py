@@ -22,7 +22,9 @@ BIN = REPO / "bin"
 DEAD_PID = 4194300
 
 STUBS = {
-    "hyprctl": r'''printf '{"address":"%s","class":"%s","fullscreen":0}\n' "${STUB_ADDRESS:-0x1}" "${STUB_CLASS:-firefox}"''',
+    "hyprctl": r'''n=$(cat "$STUB_LOG/hyprctl.calls" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$STUB_LOG/hyprctl.calls"
+addr="${STUB_ADDRESS:-0x1}"; [ "$n" -ge "${STUB_FOCUS_MOVE_AT:-999}" ] && addr="${STUB_ADDRESS2:-0x2}"
+printf '{"address":"%s","class":"%s","fullscreen":0}\n' "$addr" "${STUB_CLASS:-firefox}"''',
     "ydotool": r'''if [ "$1" = type ]; then cat >> "$STUB_LOG/typed.txt"; fi''',
     "wl-copy": r'''cat >> "$STUB_LOG/clipboard.txt"; printf '\n--\n' >> "$STUB_LOG/clipboard.txt"''',
     "wl-paste": r'''printf 'OLD'
