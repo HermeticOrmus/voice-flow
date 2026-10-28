@@ -68,6 +68,19 @@ CONVERSIONS:
 
 Output ONLY the cleaned transcript — no preamble, no quotes, no markdown, no explanation.'
 
+case "${VOICE_FLOW_EXPRESS:-formal}" in
+    casual)
+        SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+STYLE: Casual. Keep normal capitalization. Use light punctuation. Do not add a trailing period on a short message. Do not add a greeting or a sign-off the speaker did not say."
+        ;;
+    *)
+        SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+STYLE: Formal. Use standard capitalization and punctuation. Keep a trailing period on a complete sentence."
+        ;;
+esac
+
 if [ -n "${VOICE_REWRITE_VOCABULARY:-}" ]; then
     SYSTEM_PROMPT="$SYSTEM_PROMPT
 

@@ -63,7 +63,17 @@ fi
 # dashboard writes VOICE_FLOW_REWRITE=on|off; we translate to the engine's
 # command var here (gating off can't be done by emptying the var in conf —
 # the :- default would just refill it).
-if [ "${VOICE_FLOW_REWRITE:-on}" = "off" ]; then
+# Express is the tone of the cleanup. verbatim skips the rewrite.
+# formal and casual both rewrite; the style travels in the environment
+# the rewrite script reads. A terminal profile still forces verbatim
+# below, whichever express is selected.
+VOICE_FLOW_EXPRESS="${VOICE_FLOW_EXPRESS:-formal}"
+case "$VOICE_FLOW_EXPRESS" in
+    formal|casual|verbatim) ;;
+    *) VOICE_FLOW_EXPRESS=formal ;;
+esac
+export VOICE_FLOW_EXPRESS
+if [ "${VOICE_FLOW_REWRITE:-on}" = "off" ] || [ "$VOICE_FLOW_EXPRESS" = "verbatim" ]; then
     export VOICE_PASTE_REWRITE_COMMAND=""
 else
     export VOICE_PASTE_REWRITE_COMMAND="${VOICE_PASTE_REWRITE_COMMAND:-voice-rewrite-ollama}"
