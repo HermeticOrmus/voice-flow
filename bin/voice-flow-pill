@@ -19,8 +19,12 @@
 #   listening | thinking | done | copied | cancel | quit
 #   Agent-mode variants: listening-agent | thinking-agent (silver, not
 #   gold — you always know which mode is recording).
-#   done/copied accept an optional payload after a colon —
-#   "done:Hello there." — rendered as a one-line transcript preview.
+#   Payloads after a colon:
+#     listening:<forecast>      verbatim or clean — what the focused window
+#                               will do to the words; drawn as a small mark
+#     done:<preview>            a one-line preview of what landed
+#     copied:<key> <preview>    the paste key for that window, then the preview
+#     cancel:<reason>           silent | junk <logprob> | empty | hallucination
 import os
 import re
 import sys
@@ -168,6 +172,8 @@ class Pill(Gtk.Application):
         super().__init__(application_id="solutions.ormus.VoiceFlowPill")
         self.state = "listening"
         self.payload = ""         # transcript preview for done/copied
+        self.forecast = ""        # verbatim | clean, while listening
+        self.copied_key = "Ctrl+V"
         self.partial = ""         # live partial transcript while listening
         self.listen_start = time.monotonic()
         self.levels = deque([0.0] * NUM_BARS, maxlen=NUM_BARS)
@@ -326,13 +332,22 @@ class Pill(Gtk.Application):
         if s == "quit":
             self.fading_out = True
         elif s in COL:
+            text = " ".join(payload.split())
+            if s in LISTEN_STATES:
+                # The pill starts in the listening state, so the forecast
+                # must land on every poll, not only on a state change.
+                self.forecast, text = text, ""
             if s != self.state:
                 self.state = s
-                self.payload = " ".join(payload.split())
+                self.payload = text
                 if s in LISTEN_STATES:
                     self.listen_start = time.monotonic()
                     self.pcm.clear()
                     self.partial = ""
+                if s == "copied":
+                    key, _, rest = self.payload.partition(" ")
+                    if rest:
+                        self.copied_key, self.payload = key, rest
                 if s in END_STATES:
                     self._stop_audio.set()
                     # Hold longer when there's something to read: the
@@ -371,7 +386,7 @@ class Pill(Gtk.Application):
         # End states with a payload show the transcript preview instead
         # of bars — you see WHAT landed, not just that something did.
         if self.state in END_STATES and self.payload:
-            label = "copied — Ctrl+V" if self.state == "copied" else None
+            label = "copied — " + self.copied_key if self.state == "copied" else None
             self._center_text(cr, w, h, self.payload, cr2, a, hint=label)
             return
 
@@ -403,6 +418,15 @@ class Pill(Gtk.Application):
             cr.set_source_rgba(cr2[0], cr2[1], cr2[2], (0.55 + 0.45 * lv) * a)
             self._rounded(cr, x, mid - bh / 2, bar_w, bh, bar_w / 2)
             cr.fill()
+
+        # The forecast mark: verbatim or clean, small, top-right, in ink.
+        if self.state in LISTEN_STATES and self.forecast:
+            cr.select_font_face("sans-serif", 0, 0)
+            cr.set_font_size(9)
+            ext = cr.text_extents(self.forecast)
+            cr.set_source_rgba(INK[0], INK[1], INK[2], 0.55 * a)
+            cr.move_to(w - pad - ext.width, 13)
+            cr.show_text(self.forecast)
 
         # Live partial line — the TAIL of the text (most recent words).
         if show_partial:
