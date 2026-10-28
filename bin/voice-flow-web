@@ -39,9 +39,9 @@ BACKEND_STATE = os.path.join(DATA, "backend.state")
 
 PORT = int(os.environ.get("VOICE_FLOW_WEB_PORT", "7385"))
 HOSTS = {
-    "10.55.0.2": "corvin-mini · Thunderbolt",
-    "10.10.90.174": "corvin-mini · HQ LAN",
-    "100.107.202.72": "corvin-mini · Tailscale",
+    "127.0.0.1:8093": "sun",
+    "10.10.90.145:8093": "sg · HQ LAN",
+    "100.66.108.108:8093": "sg · Tailscale",
 }
 CONF_KEYS = ["VOICE_FLOW_METHOD", "VOICE_PASTE_MODEL", "VOICE_FLOW_REWRITE",
              "VOICE_FLOW_PILL", "VOICE_FLOW_LOG_TEXT", "VOICE_FLOW_PARTIALS"]
@@ -174,7 +174,7 @@ def engine():
     reachable = None
     for ip, name in HOSTS.items():
         try:
-            urllib.request.urlopen("http://%s:8090/" % ip, timeout=0.5)
+            urllib.request.urlopen("http://%s/" % ip, timeout=0.5)
             reachable = name
             break
         except urllib.error.HTTPError:
@@ -189,8 +189,8 @@ def engine():
     except FileNotFoundError:
         pass
     if last.startswith("remote "):
-        ip = last.split()[1].split(":")[0]
-        last = HOSTS.get(ip, last)
+        token = last.split()[1]
+        last = HOSTS.get(token, last)
     elif last.startswith("local "):
         last = "local fallback (%s)" % last[6:]
     return {"reachable": reachable, "last_backend": last}

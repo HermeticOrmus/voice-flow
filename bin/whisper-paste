@@ -14,11 +14,15 @@
 # hallucination filter → optional AI rewrite → stdout.
 # The terminal bracketed-pastes whatever this prints — empty stdout = no paste.
 #
-# IMPORTANT — the local whisper-cli fallback must never run on the iGPU.
-#   Sun's iGPU (i915) drives the displays; sustained inference there
-#   hangs the desktop. The remote whisper-server answers first; the
-#   local fallback stays CPU-only (VOICE_PASTE_GPU=0). Vulkan device 0
-#   is the iGPU.
+# IMPORTANT — speech hits the resident CUDA server, never the iGPU.
+#   Sun's iGPU (i915) drives the displays. whisper-cli on that device
+#   hangs the desktop. The HTTP server on :8093 is openai-whisper
+#   large-v3-turbo on the RTX 5070 Ti. Order:
+#     - 127.0.0.1:8093  Sun, the keyboard machine
+#     - 10.10.90.145:8093  sg (Saturnian Green) on the HQ LAN
+#     - 100.66.108.108:8093  sg over Tailscale
+#   whisper-cli remains the last resort and stays CPU-only
+#   (VOICE_PASTE_GPU=0). Vulkan device 0 is the iGPU.
 #
 # Tunables (env):
 #   VOICE_PASTE_MODE         "toggle" (default) or "fixed"
@@ -35,7 +39,7 @@
 #   VOICE_PASTE_REMOTE       "on" (default) try remote whisper-server
 #                            first, "off" local-only
 #   VOICE_PASTE_REMOTE_HOSTS space-separated host:port list, first
-#                            reachable wins (default: corvin-mini via
+#                            reachable wins (default: mars via
 #                            TB → HQ LAN → Tailscale)
 #   VOICE_PASTE_REMOTE_TIMEOUT  curl --max-time for remote inference
 #                            (default 6; connect probe is 0.4s/host)
@@ -54,11 +58,10 @@ THREADS=${VOICE_PASTE_THREADS:-$(nproc)}
 GPU=${VOICE_PASTE_GPU:-0}
 GPU_DEVICE=${VOICE_PASTE_GPU_DEVICE:-1}
 
-# Remote whisper-server offload (corvin-mini). medium.en sits resident
-# in the 8060S — no per-call model load, ~0.4s for 11s of audio. Local
-# whisper-cli remains the fallback when no host answers.
+# Resident CUDA server on Sun, then sg. Local whisper-cli only when
+# none of those answer.
 REMOTE=${VOICE_PASTE_REMOTE:-on}
-REMOTE_HOSTS=${VOICE_PASTE_REMOTE_HOSTS:-"10.55.0.2:8090 10.10.90.174:8090 100.107.202.72:8090"}
+REMOTE_HOSTS=${VOICE_PASTE_REMOTE_HOSTS:-"127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093"}
 REMOTE_TIMEOUT=${VOICE_PASTE_REMOTE_TIMEOUT:-6}
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/models"
