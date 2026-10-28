@@ -1,3 +1,4 @@
 active-window/target/
 *.swp
 __pycache__/
+panel/target/

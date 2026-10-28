@@ -1,0 +1,11 @@
+[package]
+name = "voice-flow-panel"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "voice-flow-panel"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = "0.9"
