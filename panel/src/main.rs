@@ -1,4 +1,5 @@
 mod store;
+mod theme;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -31,20 +32,7 @@ fn build(app: &Application) {
         .build();
 
     let css = CssProvider::new();
-    css.load_from_data(
-        "window { background: #0B0B0D; }
-         label { color: #E8E4DA; }
-         .title { color: #E0B258; font-weight: 700; font-size: 18px; }
-         .muted { color: #8A857A; font-size: 12px; }
-         .section { color: #B6A98A; font-weight: 700; font-size: 11px; }
-         entry, textview, textview text {
-           background: #141318;
-           color: #E8E4DA;
-         }
-         list, row { background: #141318; color: #E8E4DA; }
-         button { background: #1A1814; color: #E8E4DA; }
-         button:checked { background: #D29E3D; color: #0B0B0D; }",
-    );
+    css.load_from_data(&theme::css(&theme::load()));
     gtk4::style_context_add_provider_for_display(
         &gtk4::gdk::Display::default().expect("display"),
         &css,
