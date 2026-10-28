@@ -129,7 +129,7 @@ rules.
 While you speak, the pill re-transcribes its own mic tap every ~1.2 s
 against the same whisper server as the final pass and shows the words
 landing in real time. Feedback only — the injected text still comes from
-the stop-time pass. Sliding 15 s window, non-speech annotations stripped,
+the stop-time pass. Sliding 6 s window (the pill shows the tail), non-speech annotations stripped,
 disabled automatically when no host answers. Toggle: `VOICE_FLOW_PARTIALS`
 (conf or web settings).
 

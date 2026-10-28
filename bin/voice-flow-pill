@@ -130,7 +130,8 @@ PARTIALS_ON = os.environ.get("VOICE_FLOW_PARTIALS", "1") != "0"
 PARTIAL_HOSTS = os.environ.get(
     "VOICE_FLOW_PARTIAL_HOSTS",
     "127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093").split()
-PARTIAL_WINDOW_S = 15      # sliding window of audio re-sent each tick
+PARTIAL_WINDOW_S = 6       # sliding window of audio re-sent each tick; the pill
+                           # shows only the tail (~60 chars), 6 s of speech covers it
 PARTIAL_TICK_S = 1.2
 
 # Geometry: grounded rounded-rect, not a full capsule; thin bars.
