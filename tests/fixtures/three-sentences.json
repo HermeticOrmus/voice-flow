@@ -1,0 +1,22 @@
+{
+ "sample_rate": 16000,
+ "voice": "piper en_US-ryan-high",
+ "noise_rms": 0.01,
+ "sentences": [
+  {
+   "t0": 2.0,
+   "t1": 4.02,
+   "text": "The first idea is about the Sun board."
+  },
+  {
+   "t0": 7.02,
+   "t1": 9.899,
+   "text": "Second thought: the Raven portal needs a fix."
+  },
+  {
+   "t0": 12.899,
+   "t1": 15.105,
+   "text": "Third, call Laura about Alqvimia."
+  }
+ ]
+}
