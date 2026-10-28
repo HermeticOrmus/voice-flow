@@ -10,8 +10,8 @@ use gtk4::glib::{self, ControlFlow};
 use gtk4::prelude::*;
 use gtk4::{
     gio, Align, Application, ApplicationWindow, Box, Button, CssProvider, Entry, Label, ListBox,
-    ListBoxRow, Orientation, PolicyType, ScrolledWindow, SelectionMode, Separator, TextView,
-    ToggleButton, WrapMode,
+    ListBoxRow, Orientation, PolicyType, ScrolledWindow, SelectionMode, Separator, Switch,
+    TextView, ToggleButton, WrapMode,
 };
 
 use store::Express;
@@ -95,6 +95,8 @@ fn build(app: &Application) {
     express_row.append(&casual);
     express_row.append(&verbatim);
     root.append(&express_row);
+    root.append(&controls_row());
+    root.append(&actions_row());
 
     root.append(&section("Last paste"));
     let paste_view = TextView::new();
@@ -417,4 +419,91 @@ fn number(caption: &str) -> (Box, Label) {
     column.append(&value);
     column.append(&label);
     (column, value)
+}
+
+/// The dictation settings voice-flow reads from the conf on every press.
+/// Each control writes its one key in place; nothing restarts.
+fn controls_row() -> Box {
+    let conf = store::load_conf(&store::conf_path());
+    let row = Box::new(Orientation::Horizontal, 8);
+
+    let method_label = Label::new(Some("INJECT"));
+    method_label.add_css_class("section");
+    row.append(&method_label);
+    let current = conf
+        .get("VOICE_FLOW_METHOD")
+        .map(String::as_str)
+        .unwrap_or("auto");
+    let mut group: Option<ToggleButton> = None;
+    for value in ["auto", "type", "paste"] {
+        let button = ToggleButton::with_label(value);
+        if let Some(first) = &group {
+            button.set_group(Some(first));
+        }
+        button.set_active(value == current);
+        button.connect_toggled(move |b| {
+            if b.is_active() {
+                let _ = store::save_key(&store::conf_path(), "VOICE_FLOW_METHOD", value);
+            }
+        });
+        row.append(&button);
+        if group.is_none() {
+            group = Some(button);
+        }
+    }
+
+    for (caption, key, on, off) in [
+        ("AI cleanup", "VOICE_FLOW_REWRITE", "on", "off"),
+        ("Pill", "VOICE_FLOW_PILL", "1", "0"),
+        ("Live words", "VOICE_FLOW_PARTIALS", "1", "0"),
+        ("Keep text in history", "VOICE_FLOW_LOG_TEXT", "1", "0"),
+    ] {
+        let default = if key == "VOICE_FLOW_LOG_TEXT" {
+            off
+        } else {
+            on
+        };
+        let active = conf.get(key).map(String::as_str).unwrap_or(default) == on;
+        let switch = Switch::new();
+        switch.set_active(active);
+        switch.set_valign(Align::Center);
+        switch.connect_state_set(move |_, state| {
+            let _ = store::save_key(&store::conf_path(), key, if state { on } else { off });
+            glib::Propagation::Proceed
+        });
+        let caption = Label::new(Some(caption));
+        caption.add_css_class("muted");
+        let pair = Box::new(Orientation::Horizontal, 6);
+        pair.set_margin_start(10);
+        pair.append(&switch);
+        pair.append(&caption);
+        row.append(&pair);
+    }
+    row
+}
+
+/// Dictate and Agent run voice-flow as the key bind does; Analytics opens
+/// the web page; App profiles opens the terminal list in the editor.
+fn actions_row() -> Box {
+    let row = Box::new(Orientation::Horizontal, 8);
+    for (caption, command) in [
+        ("Dictate · Super+H", vec!["voice-flow"]),
+        ("Agent", vec!["voice-flow", "agent"]),
+        ("Analytics", vec!["voice-flow-web"]),
+    ] {
+        let button = Button::with_label(caption);
+        button.connect_clicked(move |_| {
+            let _ = std::process::Command::new(command[0])
+                .args(&command[1..])
+                .spawn();
+        });
+        row.append(&button);
+    }
+    let profiles = Button::with_label("App profiles");
+    profiles.connect_clicked(|_| {
+        let path = store::config_dir().join("app-profiles.conf");
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    });
+    row.append(&profiles);
+    row
 }

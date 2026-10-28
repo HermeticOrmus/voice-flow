@@ -17,9 +17,8 @@ runs), builds the Rust helpers, and prints the key bind. On Sun the bind is
 | `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper (remote-first, see below) → hallucination filter → optional LLM rewrite. |
 | `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
-| `voice-flow-panel` | Rust GTK4 window: Express (formal, casual, verbatim), dictionary, substitutions, last paste. Writes `VOICE_FLOW_EXPRESS` in place and keeps every other conf key. |
-| `voice-flow-dashboard` | Python GTK4 control panel: live status, today's stats, engine card, toggles, last transcript. Its controls move into `voice-flow-panel`. |
-| `voice-flow-web` | Rich analytics dashboard: charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. Runs on Sun (`http://127.0.0.1:7385`, GTK Analytics button) AND on Mars (corvin-mini), where it backs the portal. |
+| `voice-flow-panel` | Rust GTK4 window, the one control surface: live state, today's numbers, the engine, Express (formal, casual, verbatim), inject method and switches, Dictate and Agent, dictionary, substitutions, last paste. Writes each conf key in place. Launcher "Voice Flow". |
+| `voice-flow-web` | Rich analytics dashboard: charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. Runs on Sun (`http://127.0.0.1:7385`, the panel's Analytics button) AND on Mars (corvin-mini), where it backs the portal. |
 
 ## The portal — voice.ormus.solutions
 
@@ -168,12 +167,12 @@ the rewrite model is `qwen3:32b` (think off, resident, 15 s timeout).
 Raw passthrough when no host answers. Override with `VOICE_PASTE_REMOTE=off`,
 `VOICE_PASTE_REMOTE_HOSTS`, `OLLAMA_HOSTS`, `VOICE_REWRITE_MODEL`.
 
-The dashboard's model toggle governs the **local fallback** only.
+`VOICE_PASTE_MODEL` in the conf governs the **local fallback** only.
 
 ## Config
 
 `~/.config/ormus-voice/voice-flow.conf` (shell `KEY=value`, sourced each run;
-written by the panel, the dashboard and the web settings): `VOICE_FLOW_METHOD`,
+written key by key by the panel and the web settings): `VOICE_FLOW_METHOD`,
 `VOICE_PASTE_MODEL` (local fallback), `VOICE_FLOW_REWRITE`, `VOICE_FLOW_EXPRESS`
 (formal, casual, verbatim), `VOICE_FLOW_PILL`, `VOICE_FLOW_PARTIALS`,
 `VOICE_FLOW_LOG_TEXT` (1 keeps transcript text in the history log).
@@ -182,7 +181,7 @@ written by the panel, the dashboard and the web settings): `VOICE_FLOW_METHOD`,
 
 `~/.local/share/ormus-voice/history.jsonl` — one privacy-respecting line per
 dictation (counts only, never transcript text): `ts, words, chars, model,
-method, rewrite, transcribe_ms, diverted`. The dashboard reads it for "today".
+method, rewrite, transcribe_ms, diverted`. The panel reads it for "today".
 
 ## Install
 

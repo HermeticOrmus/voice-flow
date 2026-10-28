@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Install voice-flow: symlink the scripts into ~/.local/bin, build the
 # Rust helpers (the panel; the COSMIC focus reader), and register the
-# dashboard launcher. Re-run after a pull: the links follow the repo.
+# panel launcher. Re-run after a pull: the links follow the repo.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="$HOME/.local/bin"
 mkdir -p "$BIN" "$HOME/.local/share/applications"
 
-for f in voice-flow whisper-paste voice-flow-pill voice-flow-dashboard voice-flow-web vibecoding-record \
+for f in voice-flow whisper-paste voice-flow-pill voice-flow-web vibecoding-record \
          voice-rewrite-ollama voice-rewrite-claude voice-agent-ollama voice-train voice-substitute; do
     ln -sf "$HERE/bin/$f" "$BIN/$f"
     chmod +x "$HERE/bin/$f"
@@ -49,6 +49,8 @@ else
     echo "WARN: cargo not found — voice-flow-panel and ormus-active-window skipped"
 fi
 
+# The python dashboard retired into the panel; drop its stale link.
+rm -f "$BIN/voice-flow-dashboard"
 cp "$HERE/voice-flow-dashboard.desktop" "$HOME/.local/share/applications/"
 echo "done. Bind a key to voice-flow: Hyprland (Omarchy) bindings.lua"
 echo '  o.bind("SUPER + H", "Toggle dictation", "voice-flow", { dont_inhibit = true, allow_input_capture = true })'

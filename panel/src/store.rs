@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -140,31 +141,42 @@ pub fn save_substitutions(path: &Path, rows: &[Substitution]) -> io::Result<()> 
     atomic_write(path, &body)
 }
 
-pub fn load_express(path: &Path) -> Express {
+/// `KEY=value` lines of voice-flow.conf; comments and blanks skipped.
+pub fn load_conf(path: &Path) -> HashMap<String, String> {
     let text = fs::read_to_string(path).unwrap_or_default();
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(value) = line.strip_prefix("VOICE_FLOW_EXPRESS=") {
-            return Express::parse(value.trim_matches('"'));
-        }
-    }
-    Express::Formal
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').to_string()))
+        .collect()
 }
 
-pub fn save_express(path: &Path, express: Express) -> io::Result<()> {
+pub fn load_express(path: &Path) -> Express {
+    load_conf(path)
+        .get("VOICE_FLOW_EXPRESS")
+        .map(|v| Express::parse(v))
+        .unwrap_or(Express::Formal)
+}
+
+/// Set one key where it stands; every other line stays. voice-flow sources
+/// this file on each dictation, the web page writes its own keys the same
+/// way, so a save from either side never erases the other's.
+pub fn save_key(path: &Path, key: &str, value: &str) -> io::Result<()> {
     let text = fs::read_to_string(path).unwrap_or_default();
-    let key = format!("VOICE_FLOW_EXPRESS={}", express.as_str());
+    let line = format!("{key}={value}");
+    let prefix = format!("{key}=");
     let mut found = false;
     let mut out = String::new();
-    for line in text.lines() {
-        if line.trim_start().starts_with("VOICE_FLOW_EXPRESS=") {
+    for existing in text.lines() {
+        if existing.trim_start().starts_with(&prefix) {
             if !found {
-                out.push_str(&key);
+                out.push_str(&line);
                 out.push('\n');
                 found = true;
             }
         } else {
-            out.push_str(line);
+            out.push_str(existing);
             out.push('\n');
         }
     }
@@ -173,10 +185,14 @@ pub fn save_express(path: &Path, express: Express) -> io::Result<()> {
             out.push_str("# voice-flow config — written by voice-flow-panel.\n");
             out.push_str("# Sourced by voice-flow on every dictation.\n");
         }
-        out.push_str(&key);
+        out.push_str(&line);
         out.push('\n');
     }
     atomic_write(path, &out)
+}
+
+pub fn save_express(path: &Path, express: Express) -> io::Result<()> {
+    save_key(path, "VOICE_FLOW_EXPRESS", express.as_str())
 }
 
 pub fn load_last_paste(path: &Path) -> String {
@@ -257,6 +273,31 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches("VOICE_FLOW_EXPRESS=").count(), 1);
         assert_eq!(load_express(&path), Express::Verbatim);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_key_edits_in_place_and_keeps_the_rest() {
+        let root = dir();
+        let path = root.join("voice-flow.conf");
+        fs::write(
+            &path,
+            "# mine\nVOICE_FLOW_METHOD=auto\nVOICE_IDEAS_PAUSE_MS=1500\nVOICE_FLOW_PILL=1\n",
+        )
+        .unwrap();
+        save_key(&path, "VOICE_FLOW_PILL", "0").unwrap();
+        save_key(&path, "VOICE_FLOW_REWRITE", "off").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "# mine\nVOICE_FLOW_METHOD=auto\nVOICE_IDEAS_PAUSE_MS=1500\nVOICE_FLOW_PILL=0\nVOICE_FLOW_REWRITE=off\n"
+        );
+        let conf = load_conf(&path);
+        assert_eq!(conf.get("VOICE_FLOW_PILL").map(String::as_str), Some("0"));
+        assert_eq!(
+            conf.get("VOICE_IDEAS_PAUSE_MS").map(String::as_str),
+            Some("1500")
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -35,7 +35,7 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-/run/user/$(id -u)/.ydotool_socket}"
 
-# Persisted config (written by the voice-flow dashboard). Sourced here so
+# Persisted config (written by the panel and the web settings). Sourced here so
 # the COSMIC-spawned process — which inherits the compositor's env, not a
 # shell rc — still picks up the user's chosen method/model/rewrite/pill.
 # A var explicitly set in the real environment is preserved (the conf
@@ -61,7 +61,7 @@ fi
 # AI cleanup (Wispr-style): route the engine's optional rewrite through
 # the local Ollama helper — strips filler, applies punctuation, keeps
 # technical terms + your vocabulary verbatim. Local + private. The
-# dashboard writes VOICE_FLOW_REWRITE=on|off; we translate to the engine's
+# panel writes VOICE_FLOW_REWRITE=on|off; we translate to the engine's
 # command var here (gating off can't be done by emptying the var in conf —
 # the :- default would just refill it).
 # Express is the tone of the cleanup. verbatim skips the rewrite.
@@ -191,7 +191,7 @@ note_divert() {  # $1 = the paste key for the focused window
 }
 
 # Append one privacy-respecting line per dictation — COUNTS ONLY, never
-# the transcript text — for the dashboard's stats. last-paste.txt already
+# the transcript text — for the panel's numbers. last-paste.txt already
 # holds the latest text; this rolling log is metadata, not content.
 HISTORY_LOG="${VOICE_FLOW_HISTORY_LOG:-${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/history.jsonl}"
 history_log() {  # $1=text $2=method $3=diverted(0|1) $4=start-epoch $5=end-epoch
