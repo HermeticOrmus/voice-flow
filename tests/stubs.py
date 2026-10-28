@@ -49,6 +49,7 @@ import sys, wave
 with wave.open(sys.argv[1], "wb") as w:
     w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(b"\0" * 16000)
 PY''',
+    "voice-flow-pill": "",
     "notify-send": "",
     "paplay": "",
 }

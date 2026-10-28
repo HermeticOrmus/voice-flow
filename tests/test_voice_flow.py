@@ -138,3 +138,44 @@ class FocusGuard(unittest.TestCase):
         dictate(self.env)
         self.assertIn(CTRL_V, log_lines(self.env, "ydotool"))
         self.assertIn('"diverted":0', (self.tmp / "data" / "ormus-voice" / "history.jsonl").read_text())
+
+
+class Forecast(unittest.TestCase):
+    """The pill says what will happen to the words: verbatim or clean on start, the paste key on a divert."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, VOICE_FLOW_PILL="1", STUB_TEXT=LONG)
+        conf = self.tmp / "config" / "ormus-voice"
+        conf.mkdir(parents=True)
+        shutil.copy(REPO / "config" / "app-profiles.conf", conf / "app-profiles.conf")
+        self.pill_state = self.tmp / "run" / "ormus-voice" / "pill.state"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def start(self):
+        r = subprocess.run([str(BIN / "voice-flow")], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_terminal_forecasts_verbatim(self):
+        self.env["STUB_CLASS"] = "foot"
+        self.start()
+        self.assertEqual(self.pill_state.read_text(), "listening:verbatim")
+
+    def test_a_browser_forecasts_clean(self):
+        self.env["STUB_CLASS"] = "firefox"
+        self.start()
+        self.assertEqual(self.pill_state.read_text(), "listening:clean")
+
+    def test_a_divert_in_a_terminal_names_ctrl_shift_v(self):
+        # hyprctl calls with the pill on: 1 forecast, 2 profile, 3 focus before, 4 focus after.
+        self.env.update(STUB_CLASS="foot", STUB_FOCUS_MOVE_AT="4")
+        dictate(self.env)
+        self.assertTrue(self.pill_state.read_text().startswith("copied:Ctrl+Shift+V "), self.pill_state.read_text())
+        self.assertIn("Ctrl+Shift+V", "\n".join(log_lines(self.env, "notify-send")))
+
+    def test_a_divert_elsewhere_names_ctrl_v(self):
+        self.env.update(STUB_CLASS="firefox", STUB_FOCUS_MOVE_AT="4")
+        dictate(self.env)
+        self.assertTrue(self.pill_state.read_text().startswith("copied:Ctrl+V "), self.pill_state.read_text())
