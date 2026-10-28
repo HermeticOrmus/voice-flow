@@ -121,10 +121,10 @@ timeout → raw paste). Both inference stages now run on corvin-mini
 - **Rewrite**: mini's ollama (`llama3.2:3b`, `keep_alive -1`,
   `num_ctx 4096`, 100 % GPU). ~0.3 s warm.
 
-Both scripts probe hosts in order — Thunderbolt `10.55.0.2` → HQ LAN
-`10.10.90.174` → Tailscale `100.107.202.72` — and fall back to local
-inference (whisper-cli) / raw passthrough (rewrite) when nothing
-answers. A fully-dead remote costs ~0.4 s of probing. Override with
+Speech probes `127.0.0.1:8093` (Sun, large-v3-turbo on the RTX 5070 Ti),
+then sg at `10.10.90.145:8093` (HQ LAN) and `100.66.108.108:8093`
+(Tailscale). Rewrite probes sg Ollama on `:11434` in that same order.
+whisper-cli / raw passthrough remain the last resort. Override with
 `VOICE_PASTE_REMOTE=off`, `VOICE_PASTE_REMOTE_HOSTS`, `OLLAMA_HOSTS`.
 
 Mini side lives at `corvin-mini:~/tools/whisper.cpp` (Vulkan build;

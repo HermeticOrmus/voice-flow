@@ -77,13 +77,13 @@ RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 STATE_FILE = os.path.join(RUNTIME, "ormus-voice", "pill.state")
 
 # Live partials: while listening, the pill re-transcribes its own mic
-# tap every ~1.2s against the fast base.en server on corvin-mini and
-# shows the words as you speak. Feedback only — the injected text still
-# comes from medium.en on stop. Costs one 50-130ms POST per tick.
+# tap every ~1.2s against the same CUDA server as the final transcript
+# (Sun :8093, then sg). Feedback only — the injected text still comes
+# from the stop-time pass.
 PARTIALS_ON = os.environ.get("VOICE_FLOW_PARTIALS", "1") != "0"
 PARTIAL_HOSTS = os.environ.get(
     "VOICE_FLOW_PARTIAL_HOSTS",
-    "10.55.0.2:8091 10.10.90.174:8091 100.107.202.72:8091").split()
+    "127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093").split()
 PARTIAL_WINDOW_S = 15      # sliding window of audio re-sent each tick
 PARTIAL_TICK_S = 1.2
 

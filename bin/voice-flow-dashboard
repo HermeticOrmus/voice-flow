@@ -42,9 +42,9 @@ PROFILES_PATH = os.path.join(CONF_DIR, "app-profiles.conf")
 
 # Friendly names for the offload hosts (matches whisper-paste's probe).
 HOST_NAMES = {
-    "10.55.0.2": "corvin-mini · Thunderbolt",
-    "10.10.90.174": "corvin-mini · HQ LAN",
-    "100.107.202.72": "corvin-mini · Tailscale",
+    "127.0.0.1:8093": "sun",
+    "10.10.90.145:8093": "sg · HQ LAN",
+    "100.66.108.108:8093": "sg · Tailscale",
 }
 
 DEFAULTS = {
@@ -371,15 +371,15 @@ class Dashboard(Gtk.Application):
             for ip, name in HOST_NAMES.items():
                 r = subprocess.run(
                     ["curl", "-s", "-o", "/dev/null", "--connect-timeout", "0.3",
-                     "-m", "1", "http://%s:8090/" % ip],
+                     "-m", "1", "http://%s/" % ip],
                     capture_output=True)
                 if r.returncode in (0, 22):  # 22 = HTTP error; server IS there
                     reachable = name
                     break
             backend = read_text(BACKEND_STATE, 64)
             if backend.startswith("remote "):
-                ip = backend.split()[1].split(":")[0]
-                used = HOST_NAMES.get(ip, backend[7:])
+                token = backend.split()[1]
+                used = HOST_NAMES.get(token, token)
             elif backend.startswith("local "):
                 used = "local fallback (%s)" % backend[6:]
             else:

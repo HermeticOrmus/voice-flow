@@ -25,7 +25,7 @@ VOCAB_FILE="$CONF_DIR/vocabulary.txt"
 SUBS_FILE="$CONF_DIR/substitutions.tsv"
 JOURNAL="$DATA_DIR/corrections.jsonl"
 TAKES="${VOICE_TRAIN_TAKES:-2}"
-REMOTE_HOSTS="${VOICE_PASTE_REMOTE_HOSTS:-10.55.0.2:8090 10.10.90.174:8090 100.107.202.72:8090}"
+REMOTE_HOSTS="${VOICE_PASTE_REMOTE_HOSTS:-127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093}"
 mkdir -p "$CONF_DIR" "$DATA_DIR"
 
 # --- transcribe one take, RAW (no vocab prompt) ----------------------
