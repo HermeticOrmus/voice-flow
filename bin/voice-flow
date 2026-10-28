@@ -153,15 +153,17 @@ resolve_method() {  # mirror inject()'s auto decision, for the history log
     printf '%s' "$m"
 }
 
-# Stable key for the current window focus, via the COSMIC toplevel reader
-# (ormus-active-window). We compare the SORTED SET of all activated
-# toplevel ids — COSMIC can mark one activated per output, and the
-# helper's single-value mode returns whichever comes first in iteration
-# order (not stable across runs), so the set is the robust signal. Prints
-# empty if the helper is missing or nothing is activated — callers treat
-# empty as "unknown" and do NOT divert, so the interlock fails OPEN
-# (degrades to legacy inject) rather than ever wrongly blocking a paste.
+# Stable key for the current window focus. Two readers, first that
+# answers: Hyprland (the active window's address, stable for the life of
+# the window), then the COSMIC toplevel reader (ormus-active-window; the
+# SORTED SET of activated ids, since COSMIC marks one per output and the
+# helper's single-value order is not stable). Prints empty when neither
+# answers — callers treat empty as "unknown" and do NOT divert, so the
+# interlock fails OPEN (legacy inject) rather than wrongly blocking a paste.
 focus_id() {
+    local addr
+    addr="$(hyprctl activewindow -j 2>/dev/null | jq -r '.address // empty' 2>/dev/null || true)"
+    if [ -n "$addr" ]; then printf '%s' "$addr"; return 0; fi
     command -v ormus-active-window >/dev/null 2>&1 || return 0
     ormus-active-window --list 2>/dev/null \
         | awk '/^\*/ { n=split($0, p, "id=\""); v=p[n]; sub(/".*/, "", v); print v }' \
