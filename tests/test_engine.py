@@ -162,3 +162,51 @@ class Style(unittest.TestCase):
 
     def test_unknown_value_reads_as_formal(self):
         self.assertIn("STYLE: Formal.", self.prompt_sent("shouty"))
+
+
+JUNK = ('{"text":"Vasime glaha, haiu, ro只是信 Мария gault, více, 보라, Tapia, köde, Glence. Thank you.",'
+        '"segments":[{"text":"Vasime glaha, haiu, ro只是信 Мария gault, více, 보라, Tapia, köde, Glence.","avg_logprob":-5.92},'
+        '{"text":" Thank you.","avg_logprob":-0.66}]}')
+SPANISH = '{"text":"¿Qué es esto? ¿Qué ocurre?","segments":[{"text":"¿Qué es esto? ¿Qué ocurre?","avg_logprob":-0.98}]}'
+NO_SEGMENTS = '{"text":"plain server answer"}'
+
+
+class JunkGate(unittest.TestCase):
+    """Whisper's own confidence decides: a transcript with a low log-prob is junk and is dropped."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, VOICE_PASTE_QUIET="1", VOICE_PASTE_PHASE="stop")
+        models = self.tmp / "data" / "ormus-voice" / "models"
+        models.mkdir(parents=True)
+        (models / "ggml-base.en.bin").write_bytes(b"model")
+        run = self.tmp / "run" / "ormus-voice"
+        run.mkdir(parents=True)
+        (run / "recording.state").write_text(f"{DEAD_PID}:{silent_wav(self.tmp / 'take.wav')}")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def stop(self, answer: str) -> subprocess.CompletedProcess:
+        self.env["STUB_CURL_OUT"] = answer
+        return subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
+
+    def test_the_2018_junk_is_dropped(self):
+        r = self.stop(JUNK)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("junk", (self.tmp / "run" / "ormus-voice" / "last-drop").read_text())
+
+    def test_spanish_speech_passes(self):
+        self.assertEqual(self.stop(SPANISH).stdout.strip(), "¿Qué es esto? ¿Qué ocurre?")
+
+    def test_a_server_without_segments_is_not_gated(self):
+        self.assertEqual(self.stop(NO_SEGMENTS).stdout.strip(), "plain server answer")
+
+    def test_a_text_only_server_still_works(self):
+        self.assertEqual(self.stop("Hello there.").stdout.strip(), "Hello there.")
+
+    def test_silence_names_its_reason(self):
+        self.env["STUB_RMS"] = "0.0010"
+        self.stop(SPANISH)
+        self.assertIn("silent", (self.tmp / "run" / "ormus-voice" / "last-drop").read_text())
