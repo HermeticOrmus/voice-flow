@@ -31,6 +31,10 @@
 #   VOICE_PASTE_MODEL        whisper model name (default base.en)
 #   VOICE_PASTE_MODEL_PATH   explicit ggml model path (overrides MODEL)
 #   VOICE_PASTE_RMS_MIN      silence-gate threshold (default 0.005)
+#   VOICE_PASTE_MIN_LOGPROB  junk gate: a transcript whose length-weighted
+#                            mean segment avg_logprob is below this is
+#                            dropped (default -1.5; speech reads -0.3 to
+#                            -1.0, noise and game audio -2 to -6)
 #   VOICE_PASTE_THREADS      whisper-cli thread count (default: nproc)
 #   VOICE_PASTE_GPU          "1" use GPU, "0" CPU only (default: 0 —
 #                            local fallback must never touch the iGPU)
@@ -54,6 +58,7 @@ DURATION=${VOICE_PASTE_SECONDS:-8}
 MAX_DURATION=${VOICE_PASTE_MAX_SECONDS:-120}
 MODEL_NAME=${VOICE_PASTE_MODEL:-base.en}
 RMS_MIN=${VOICE_PASTE_RMS_MIN:-0.005}
+MIN_LOGPROB=${VOICE_PASTE_MIN_LOGPROB:--1.5}
 THREADS=${VOICE_PASTE_THREADS:-$(nproc)}
 GPU=${VOICE_PASTE_GPU:-0}
 GPU_DEVICE=${VOICE_PASTE_GPU_DEVICE:-1}
@@ -89,6 +94,10 @@ STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/ormus-voice"
 mkdir -p "$STATE_DIR"
 STATE_FILE="$STATE_DIR/recording.state"
 NOTIFY_ID_FILE="$STATE_DIR/notify.id"
+# Why the last take produced no text: silent | junk <logprob> | empty |
+# hallucination. voice-flow shows it in the pill's cancel state.
+DROP_FILE="$STATE_DIR/last-drop"
+drop() { printf '%s' "$1" > "$DROP_FILE" 2>/dev/null || true; }
 
 # --- Notification helper -----------------------------------------------
 # Each note() call replaces the previous one in the same voice-paste
@@ -147,7 +156,8 @@ fi
 # bracketed-paste. Always clears notify state before exit.
 transcribe_and_paste() {
     local wav="$1"
-    [ -f "$wav" ] || { note 2500 "🤫 Empty" "no recording captured"; clear_notify_state; return 0; }
+    rm -f "$DROP_FILE"
+    [ -f "$wav" ] || { note 2500 "🤫 Empty" "no recording captured"; drop empty; clear_notify_state; return 0; }
 
     # Silence gate.
     if command -v sox >/dev/null 2>&1; then
@@ -158,6 +168,7 @@ transcribe_and_paste() {
         rms=$(sox "$wav" -n stat 2>&1 | awk -F'[: ]+' '/RMS *amplitude/{print $3; exit}')
         if [ -n "$rms" ] && awk -v r="$rms" -v m="$RMS_MIN" 'BEGIN{exit !(r < m)}'; then
             note 2500 "🤫 Silent" "no speech detected (RMS=$rms)"
+            drop silent
             clear_notify_state
             return 0
         fi
@@ -187,7 +198,7 @@ transcribe_and_paste() {
     # backend.state tells the dashboard which engine served the last
     # dictation (runtime dir — it resets on reboot, like the rest).
     local backend_state="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/backend.state"
-    local trimmed="" host remote_served=0
+    local trimmed="" host remote_served=0 logprob=""
     if [ "$REMOTE" = "on" ]; then
         for host in $REMOTE_HOSTS; do
             note 30000 "✍️ Transcribing" "whisper-server @ $host$vocab_note…"
@@ -195,13 +206,24 @@ transcribe_and_paste() {
             # request even when the transcript is empty (VAD trimmed pure
             # silence). Treating empty-but-successful as failure used to
             # fall through to the local GPU path on every silent take.
-            local raw rc=0
+            # JSON so whisper's own confidence rides along: openai-whisper
+            # answers segments[].avg_logprob (whisper.cpp answers text only,
+            # and a plain-text server is read as the text itself).
+            local raw rc=0 text
             raw=$(curl -sSf --connect-timeout 0.4 -m "$REMOTE_TIMEOUT" \
-                -F "file=@$wav" -F response_format=text \
+                -F "file=@$wav" -F response_format=json \
                 ${VOCAB:+-F "prompt=$VOCAB"} \
                 "http://$host/inference" 2>/dev/null) || rc=$?
             if [ "$rc" = "0" ]; then
-                trimmed=$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if text=$(printf '%s' "$raw" | jq -er '.text // ""' 2>/dev/null); then
+                    logprob=$(printf '%s' "$raw" | jq -r '
+                        [.segments[]? | {l: (.text | length), p: .avg_logprob}]
+                        | (map(.l) | add) as $n
+                        | if $n == null or $n == 0 then "" else ((map(.l * .p) | add) / $n | tostring) end' 2>/dev/null || true)
+                else
+                    text="$raw"
+                fi
+                trimmed=$(printf '%s' "$text" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 remote_served=1
                 printf 'remote %s' "$host" > "$backend_state" 2>/dev/null || true
                 break
@@ -238,6 +260,18 @@ transcribe_and_paste() {
 
     if [ -z "$trimmed" ]; then
         note 2500 "🤫 Empty transcript" "whisper produced no text"
+        drop empty
+        clear_notify_state
+        return 0
+    fi
+
+    # Junk gate: room noise and game audio come back as fluent-looking text
+    # in any language, but whisper's log-prob on them is far below speech
+    # (measured: junk -5.9, speech -0.3 to -1.0). Text alone is not a stable
+    # signal; the number is. Only when the server gave segments.
+    if [ -n "$logprob" ] && awk -v p="$logprob" -v m="$MIN_LOGPROB" 'BEGIN{exit !(p < m)}'; then
+        note 2500 "🤫 Junk transcript" "(log-prob $logprob — not pasted)"
+        drop "junk $logprob"
         clear_notify_state
         return 0
     fi
@@ -249,12 +283,14 @@ transcribe_and_paste() {
         "" | "you" | "thank you" | "thanks for watching" | "bye" | "okay" | \
         "thank you for watching" | "music" | "the" | "subscribe")
             note 2500 "🤫 Hallucinated silence" "(\"$trimmed\" — not pasted)"
+            drop hallucination
             clear_notify_state
             return 0
             ;;
     esac
     if echo "$lower" | grep -qE '\b(\w+)\b([[:space:],-]+\1\b){3,}'; then
         note 2500 "🤫 Hallucinated repetition" "(not pasted: \"${trimmed:0:60}…\")"
+        drop hallucination
         clear_notify_state
         return 0
     fi
