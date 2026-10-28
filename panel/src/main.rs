@@ -1,3 +1,4 @@
+mod status;
 mod store;
 mod theme;
 
@@ -8,7 +9,7 @@ use std::time::Duration;
 use gtk4::glib::{self, ControlFlow};
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Application, ApplicationWindow, Box, Button, CssProvider, Entry, Label, ListBox,
+    gio, Align, Application, ApplicationWindow, Box, Button, CssProvider, Entry, Label, ListBox,
     ListBoxRow, Orientation, PolicyType, ScrolledWindow, SelectionMode, Separator, TextView,
     ToggleButton, WrapMode,
 };
@@ -45,17 +46,25 @@ fn build(app: &Application) {
     root.set_margin_start(18);
     root.set_margin_end(18);
 
+    let head = Box::new(Orientation::Horizontal, 12);
     let title = Label::new(Some("Voice Flow"));
     title.add_css_class("title");
     title.set_halign(Align::Start);
+    title.set_hexpand(true);
+    let state = Label::new(Some(status::read_state()));
+    state.add_css_class("state");
+    state.set_halign(Align::End);
+    head.append(&title);
+    head.append(&state);
     let note = Label::new(Some(
         "Dictionary and substitutions apply on the next Super+H. Terminals stay verbatim.",
     ));
     note.add_css_class("muted");
     note.set_halign(Align::Start);
     note.set_wrap(true);
-    root.append(&title);
+    root.append(&head);
     root.append(&note);
+    root.append(&numbers_row(&state));
 
     let express_row = Box::new(Orientation::Horizontal, 8);
     let express_label = Label::new(Some("EXPRESS"));
@@ -322,4 +331,90 @@ fn row_label(row: &ListBoxRow) -> Option<String> {
     row.child()
         .and_then(|child| child.downcast::<Label>().ok())
         .map(|label| label.text().to_string())
+}
+
+/// Today's numbers and the engine, refreshed on timers: the state word
+/// every 400 ms, the counts every 2 s, the host probe every 10 s off the
+/// main thread (a dead host costs 300 ms).
+fn numbers_row(state: &Label) -> Box {
+    let row = Box::new(Orientation::Horizontal, 28);
+    let (dictations, dictations_v) = number("dictations today");
+    let (words, words_v) = number("words today");
+    let (speed, speed_v) = number("avg transcribe");
+    row.append(&dictations);
+    row.append(&words);
+    row.append(&speed);
+    let engine = Label::new(Some("engine · —"));
+    engine.add_css_class("muted");
+    engine.set_halign(Align::End);
+    engine.set_hexpand(true);
+    engine.set_valign(Align::End);
+    row.append(&engine);
+
+    let history = store::data_dir().join("history.jsonl");
+    let backend = store::data_dir().join("backend.state");
+    let refresh = {
+        let (dictations_v, words_v, speed_v) =
+            (dictations_v.clone(), words_v.clone(), speed_v.clone());
+        move || {
+            let t = status::read_today(&history);
+            dictations_v.set_text(&t.dictations.to_string());
+            words_v.set_text(&t.words.to_string());
+            speed_v.set_text(
+                &t.avg_ms
+                    .map(|ms| format!("{:.1} s", ms as f64 / 1000.0))
+                    .unwrap_or_else(|| "—".into()),
+            );
+        }
+    };
+    refresh();
+    glib::timeout_add_local(Duration::from_millis(2000), move || {
+        refresh();
+        ControlFlow::Continue
+    });
+
+    let state = state.clone();
+    glib::timeout_add_local(Duration::from_millis(400), move || {
+        let word = status::read_state();
+        if state.text() != word {
+            state.set_text(word);
+        }
+        ControlFlow::Continue
+    });
+
+    let probe = {
+        let engine = engine.clone();
+        move || {
+            let last = std::fs::read_to_string(&backend).unwrap_or_default();
+            let engine = engine.clone();
+            glib::spawn_future_local(async move {
+                let up = gio::spawn_blocking(status::reachable).await.ok().flatten();
+                engine.set_text(&format!(
+                    "engine · last {} · {}",
+                    status::backend_label(last.trim()),
+                    up.map(|n| format!("{n} answers"))
+                        .unwrap_or_else(|| "no host answers".into())
+                ));
+            });
+        }
+    };
+    probe();
+    glib::timeout_add_local(Duration::from_millis(10_000), move || {
+        probe();
+        ControlFlow::Continue
+    });
+    row
+}
+
+fn number(caption: &str) -> (Box, Label) {
+    let column = Box::new(Orientation::Vertical, 2);
+    let value = Label::new(Some("—"));
+    value.add_css_class("number");
+    value.set_halign(Align::Start);
+    let label = Label::new(Some(caption));
+    label.add_css_class("muted");
+    label.set_halign(Align::Start);
+    column.append(&value);
+    column.append(&label);
+    (column, value)
 }

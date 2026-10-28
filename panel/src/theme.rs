@@ -88,7 +88,9 @@ pub fn css(t: &Theme) -> String {
          button {{ background: {raised}; color: {ink}; }}
          button:checked {{ background: {accent}; color: {ground}; }}
          .warn {{ color: {warn}; }}
-         .ok {{ color: {ok}; }}",
+         .ok {{ color: {ok}; }}
+         .state {{ color: {muted}; font-size: 13px; }}
+         .number {{ color: {ink}; font-family: monospace; font-size: 22px; font-weight: 700; }}",
         ground = t.ground,
         ink = t.ink,
         muted = t.muted,
