@@ -91,6 +91,28 @@ The fresh-context skeptic (sonnet, card only) answered: the probe can fail, but 
 
 ## Skeptic
 
+Contract check (before attempt 0, sonnet, card only): see the amendments above.
+
+Evidence review (after attempt 4, sonnet, card and raw evidence only): 13 objections.
+
+| # | Objection | Resolution |
+|---|-----------|------------|
+| 1 | Three DJI segments were his humming, "dong dong" and a quiet vocal, not speech; the original card said "real speech" | Ruled: the assumption is VAD precision (his voice vs the room). All three are his voice. The listener's filter catches all three on this evidence: log-prob -3.33 and -6.13, and the repeat rule on "DONG, DONG" |
+| 2 | 228 s, not 300 s; thoughts counted in groups, not five | Open. Five distinct utterances are in the list, but the length fell short because the wait stopped at six segments. The naturality check runs 300 s or more |
+| 3 | Coverage is his memory after he saw the list | Open. Next capture: he says how many things he said before he sees anything |
+| 4 | No 5 min DJI stretch with the game on and him silent | Open. 162 s of it exist (6 s to 168 s: 0 segments). The naturality check adds a silent 5 min |
+| 5 | Game content unknown (voiced or not) | Open; in reopen_if |
+| 6 | webrtcvad's non-Ormus count on the DJI not labeled; settings unstated | Resolved: mode 3, 30 ms frames, the same segmenter; the comparator was decided in the loud room (5 vs 0), where it matters |
+| 7 | The 1.5 s pause was tuned on the test audio | Open. Frozen into the listener; re-scored on a fresh capture |
+| 8 | CPU holds only pinned; parec and whisper not counted | Open; PR 1's perf proof reads the real daemon from /proc over 10 min with the game on |
+| 9 | Latency margin thin (2.7 s) | Resolved: the 2.7 s was a 1 s junk clip; the 1.5 s-pause clips: median 229 ms, max 1567 ms |
+| 10 | Transcript correctness unchecked | Out of the assumption; the sorter and his review own it |
+| 11 | Quiet speech miss rate unknown (floor 0.002, quiet vocal 0.007) | Open; in reopen_if |
+| 12 | Live vs replay not separated | Resolved by walking it: the same bytes through the same deterministic loop; pacing does not change the cut |
+| 13 | One session, one game, one speaker | In scope |
+
+Open objections 2, 3, 4, 7, 8 become the first checks of the skeleton's live proof (Phase 4 naturality check). 5 and 11 stay in reopen_if.
+
 ## Constraints for /mplan
 
 - silero VAD, the ONNX model on onnxruntime, every thread pool pinned to one thread (onnxruntime intra and inter, OMP_NUM_THREADS, OPENBLAS_NUM_THREADS). Unpinned it burns a core at the live cadence.
