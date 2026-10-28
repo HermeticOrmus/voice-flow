@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# voice-flow — Wispr Flow for Pop!_OS (COSMIC / Wayland).
+# voice-flow — Wispr Flow for Linux Wayland (Omarchy/Hyprland, COSMIC).
 #
 # System-wide voice dictation. Reuses the whisper-paste engine
 # (record -> whisper.cpp -> hallucination filter -> optional LLM
@@ -10,8 +10,8 @@
 # A floating Wispr-style feedback pill (voice-flow-pill) shows a live
 # waveform while listening and a "thinking" sweep while transcribing.
 #
-# Bind to a global COSMIC shortcut (Super+Shift+V). First press starts
-# recording; second press stops, transcribes, and injects.
+# Bind to a global compositor shortcut (Super+H on Omarchy). First press
+# starts recording; second press stops, transcribes, and injects.
 #
 # WHY ydotool: on Wayland an app can't synthesize input into another
 # app's window. ydotool injects below the compositor via /dev/uinput
@@ -20,16 +20,17 @@
 # Injection method (VOICE_FLOW_METHOD):
 #   auto (default) — text of <= VOICE_FLOW_TYPE_MAX chars (default 80)
 #                    is TYPED (works in terminals and GUIs alike);
-#                    longer text is CLIPBOARD-PASTED (Ctrl+V) for speed.
+#                    longer text is CLIPBOARD-PASTED for speed: Ctrl+V,
+#                    or Ctrl+Shift+V when the focused window is a terminal.
 #   type           — always simulate keystrokes (universal, slower).
-#   paste          — always clipboard + Ctrl+V (restores clipboard;
+#   paste          — always clipboard + paste chord (restores clipboard;
 #                    non-text clipboard contents are lost).
 #
 # Visual pill on/off:  VOICE_FLOW_PILL=0 disables it.
 # AI cleanup:  export VOICE_PASTE_REWRITE_COMMAND=voice-rewrite-ollama
 set -euo pipefail
 
-# A COSMIC-spawned process inherits the compositor's PATH, which may not
+# A compositor-spawned process inherits the compositor's PATH, which may not
 # include ~/.local/bin where whisper-paste / voice-flow-pill live.
 export PATH="$HOME/.local/bin:$PATH"
 export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-/run/user/$(id -u)/.ydotool_socket}"
