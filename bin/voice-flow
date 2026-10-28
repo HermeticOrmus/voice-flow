@@ -312,5 +312,8 @@ if [ -n "$text" ]; then
         history_log "$text" "$(resolve_method "$text")" 0 "$t0" "$t1"
     fi
 else
-    pill_set cancel   # silence / hallucination / empty transcript
+    # Nothing to inject. The engine says why (silent, junk <logprob>, empty,
+    # hallucination); the pill shows the word in its cancel state.
+    reason="$(cat "$STATE_DIR/last-drop" 2>/dev/null || true)"
+    pill_set "cancel:${reason}"
 fi
