@@ -30,16 +30,22 @@ mkdir -p "$CONF_DIR" "$DATA_DIR"
 
 # --- transcribe one take, RAW (no vocab prompt) ----------------------
 transcribe_raw() {  # $1 = wav path → prints transcript
-    local wav="$1" host out=""
+    local wav="$1" host out="" served=0 rc
     for host in $REMOTE_HOSTS; do
+        rc=0
         out=$(curl -sSf --connect-timeout 0.4 -m 8 \
             -F "file=@$wav" -F response_format=text \
-            "http://$host/inference" 2>/dev/null || true)
-        [ -n "$out" ] && break
+            "http://$host/inference" 2>/dev/null) || rc=$?
+        # A host that answers has served the take — an empty transcript
+        # here is a real "heard nothing", which the caller reports.
+        [ "$rc" = "0" ] && { served=1; break; }
     done
-    if [ -z "$out" ] && command -v whisper-cli >/dev/null 2>&1; then
+    if [ "$served" = "0" ] && command -v whisper-cli >/dev/null 2>&1; then
         local model="${VOICE_PASTE_MODEL_PATH:-$DATA_DIR/models/ggml-${VOICE_PASTE_MODEL:-base.en}.bin}"
-        out=$(whisper-cli -m "$model" -f "$wav" -l en -nt -np 2>/dev/null || true)
+        # -ng = CPU only. Without it whisper-cli defaults to Vulkan device
+        # 0, which on Sun is the iGPU that drives the displays — sustained
+        # inference there hangs i915 and freezes the desktop.
+        out=$(whisper-cli -m "$model" -f "$wav" -l en -ng -nt -np 2>/dev/null || true)
     fi
     printf '%s' "$out" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/[[:space:]]\+/ /g'
 }
