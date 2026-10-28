@@ -109,3 +109,32 @@ class Express(unittest.TestCase):
         self.env["STUB_CLASS"] = "foot"
         dictate(self.env)
         self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "")
+
+
+class FocusGuard(unittest.TestCase):
+    """A window switch during transcription sends the text to the clipboard, never to the new window."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, VOICE_FLOW_PILL="0", STUB_TEXT=LONG, STUB_CLASS="firefox")
+        conf = self.tmp / "config" / "ormus-voice"
+        conf.mkdir(parents=True)
+        shutil.copy(REPO / "config" / "app-profiles.conf", conf / "app-profiles.conf")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_focus_moved_diverts_to_the_clipboard(self):
+        # Stop-phase hyprctl calls: 1 profile, 2 focus before, 3 focus after.
+        self.env["STUB_FOCUS_MOVE_AT"] = "3"
+        dictate(self.env)
+        self.assertEqual([line for line in log_lines(self.env, "ydotool") if line.startswith("key")], [])
+        self.assertEqual(read_log_file(self.env, "clipboard.txt").split("\n--\n")[0], LONG)
+        row = (self.tmp / "data" / "ormus-voice" / "history.jsonl").read_text()
+        self.assertIn('"method":"clipboard-divert"', row)
+        self.assertIn('"diverted":1', row)
+
+    def test_focus_steady_injects(self):
+        dictate(self.env)
+        self.assertIn(CTRL_V, log_lines(self.env, "ydotool"))
+        self.assertIn('"diverted":0', (self.tmp / "data" / "ormus-voice" / "history.jsonl").read_text())
