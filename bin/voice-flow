@@ -110,16 +110,26 @@ hypr_active_class() {
     hyprctl activewindow -j 2>/dev/null | jq -r '.class // empty' 2>/dev/null || true
 }
 
-paste_chord() {
-    local class
-    class="$(hypr_active_class)"
-    case "$class" in
-      # org.ormus.workboard.<session>: the Sun board's sg workboard windows (foot, 2026-10-27).
-      foot|kitty|Alacritty|com.mitchellh.ghostty|org.wezfurlong.wezterm|org.gnome.Terminal|org.kde.konsole|org.omarchy.herdr|org.omarchy.terminal|org.ormus.workboard.*)
-        "$YDOTOOL" key 29:1 42:1 47:1 47:0 42:0 29:0 2>/dev/null ;;
-      *)
-        "$YDOTOOL" key 29:1 47:1 47:0 29:0 2>/dev/null ;;
+# The focused window's class decides the paste chord and its name. A new
+# terminal app-id goes here AND in app-profiles.conf (verbatim).
+# org.ormus.workboard.<session>: the Sun board's sg workboard windows (foot).
+terminal_class() {  # $1 = window class
+    case "$1" in
+      foot|kitty|Alacritty|com.mitchellh.ghostty|org.wezfurlong.wezterm|org.gnome.Terminal|org.kde.konsole|org.omarchy.herdr|org.omarchy.terminal|org.ormus.workboard.*) return 0 ;;
+      *) return 1 ;;
     esac
+}
+
+paste_key_name() {
+    if terminal_class "$(hypr_active_class)"; then printf 'Ctrl+Shift+V'; else printf 'Ctrl+V'; fi
+}
+
+paste_chord() {
+    if terminal_class "$(hypr_active_class)"; then
+        "$YDOTOOL" key 29:1 42:1 47:1 47:0 42:0 29:0 2>/dev/null
+    else
+        "$YDOTOOL" key 29:1 47:1 47:0 29:0 2>/dev/null
+    fi
 }
 
 inject() {
@@ -173,11 +183,11 @@ focus_id() {
 # Rare-event toast for the divert case. Deliberately bypasses
 # VOICE_PASTE_QUIET: the pill can't say "press Ctrl+V", and the user
 # needs to know their words are waiting on the clipboard.
-note_divert() {
+note_divert() {  # $1 = the paste key for the focused window
     command -v notify-send >/dev/null 2>&1 || return 0
     notify-send -a "Voice Flow" -t 6000 \
         "Focus moved — transcript copied" \
-        "Press Ctrl+V to paste it where you want it." 2>/dev/null || true
+        "Press $1 to paste it where you want it." 2>/dev/null || true
 }
 
 # Append one privacy-respecting line per dictation — COUNTS ONLY, never
@@ -261,7 +271,10 @@ if [ "$PHASE" = "start" ]; then
         pill_set listening-agent
     else
         rm -f "$AGENT_MARKER"
-        pill_set listening
+        # The forecast: what the focused window will do to the words. The
+        # stop press decides again (focus can move); this is what the pill
+        # shows while you speak.
+        if [ "$PILL_ON" = "1" ]; then pill_set "listening:$(app_profile)"; else pill_set listening; fi
     fi
     pill_launch
     VOICE_PASTE_PHASE=start whisper-paste >/dev/null 2>&1 || true
@@ -303,8 +316,9 @@ if [ -n "$text" ]; then
         # Focus changed during transcription — do NOT type into the wrong
         # window. Leave the text on the clipboard for a deliberate paste.
         printf '%s' "$text" | wl-copy 2>/dev/null || true
-        pill_set "copied:$preview"
-        note_divert
+        key="$(paste_key_name)"
+        pill_set "copied:$key $preview"
+        note_divert "$key"
         history_log "$text" "clipboard-divert" 1 "$t0" "$t1"
     else
         inject "$text"
