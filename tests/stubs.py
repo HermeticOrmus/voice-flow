@@ -34,7 +34,11 @@ STUBS = {
          printf '%s' "${STUB_TEXT:-}" ;;
 esac''',
     "curl": r'''if [ -n "${STUB_CURL_EXIT:-}" ]; then exit "$STUB_CURL_EXIT"; fi
-printf '%s' "${STUB_CURL_OUT:-}"''',
+case "$*" in
+  *api/version*)  printf '{"version":"0.0"}' ;;
+  *api/generate*) printf '%s' "${STUB_OLLAMA_RESPONSE:-}" ;;
+  *)              printf '%s' "${STUB_CURL_OUT:-}" ;;
+esac''',
     "whisper-cli": r'''printf 'LOCAL'
 ''',
     "sox": r'''printf 'Samples read:  8000\nRMS     amplitude:     %s\n' "${STUB_RMS:-0.0500}" >&2''',
