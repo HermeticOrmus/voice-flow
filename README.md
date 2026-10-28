@@ -57,6 +57,20 @@ it with `systemctl --user start voice-ideas` (or from the Sun board), stop it th
 | `VOICE_IDEAS_HOSTS` | Sun :8093, then sg | whisper-server hosts, first that answers wins |
 | `VOICE_IDEAS_PAUSE_MS` | 1500 | the pause that ends an utterance |
 
+When 20 s pass after the last utterance, the listener runs `voice-ideas-sort`: the burst (utterances
+under 20 s apart) goes to a model that splits it into separate ideas, cleans the words without a
+paraphrase, and picks for each the one agent it belongs to from the rows the Sun board shows (Sun's
+herdr and sg's workboards), or none. One line per note in `ideas/notes.jsonl` (`id`, `burst`,
+`utterances`, `text`, `target` or null, `why`). No model, no board, bad JSON: the burst still lands
+as one raw note. `voice-ideas-sort --dry` prints the exchange and writes nothing.
+
+| Conf key | Default | Meaning |
+|---|---|---|
+| `VOICE_IDEAS_SORTER` | `ollama` | `ollama` (sg, JSON mode, no thinking) or `claude` |
+| `VOICE_IDEAS_MODEL` | `qwen3.6:35b-a3b-q4_K_M` | the Ollama model (resident on sg) |
+| `OLLAMA_HOSTS` | sg on the HQ LAN, then Tailscale | base URLs, first that answers wins |
+| `VOICE_IDEAS_CLAUDE_MODEL` | `claude-haiku-4-5` | with `ANTHROPIC_API_KEY`, `ANTHROPIC_API_KEY_FILE` or `~/.credentials/anthropic/ormus` |
+
 `voice-ideas --replay f.raw` runs the same loop over a raw s16le 16 kHz mono file; `--drain`
 transcribes the spool. The mechanism was settled by the spike in `docs/spikes/vad-game-capture.md`
 (branch `spike/vad-game-capture`): silero cut 0 game segments in 310 s of a loud room and 12 of 12

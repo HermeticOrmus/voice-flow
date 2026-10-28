@@ -64,6 +64,8 @@ CTX = 64               # the samples silero wants in front of each chunk
 THRESH, NEG = 0.5, 0.35
 MIN_SPEECH_MS, PAD_MS, MAX_SPEECH_S = 250, 150, 30
 PAUSE_MS_DEFAULT = 1500
+BURST_GAP_S = 20          # silence after an utterance that closes a burst: the sorter runs
+SORTER = Path(__file__).resolve().with_name("voice-ideas-sort")
 LOGPROB_FLOOR = -1.5   # junk sat at -5.9 and -6.1, his speech at -0.3 to -1.0
 HALLUCINATED = {"", "you", "thank you", "thanks for watching", "bye", "okay", "thank you for watching", "music", "the", "subscribe"}
 REPEATS = re.compile(r"\b(\w+)\b([\s,-]+\1\b){3,}")
@@ -303,10 +305,12 @@ class Store:
 
 def process(chunks: Iterable[tuple[float, np.ndarray]], vad: Vad, transcribe: Callable[[np.ndarray], dict | None],
             store: Store, dictation: Callable[[float], bool], clock: Callable[[float], float],
-            pause_ms: int = PAUSE_MS_DEFAULT) -> None:
+            pause_ms: int = PAUSE_MS_DEFAULT, on_burst_closed: Callable[[], None] | None = None) -> None:
     """The loop: a chunk in, maybe a line out. dictation(t) true drops the speech in flight (voice-flow
-    has the mic); clock(t) maps stream seconds to epoch seconds."""
+    has the mic); clock(t) maps stream seconds to epoch seconds; on_burst_closed runs once BURST_GAP_S
+    has passed since the last line (and once more at the end when a line waits)."""
     cutter, skipping = Cutter(pause_ms), False
+    unsorted_since: list[float] = []   # the end of the last logged utterance, while a burst is open
 
     def handle(seg: tuple[float, float, np.ndarray]) -> None:
         t0, t1, pcm = seg
@@ -315,7 +319,8 @@ def process(chunks: Iterable[tuple[float, np.ndarray]], vad: Vad, transcribe: Ca
         if r is None:
             say(f"no whisper host answered: spooled {store.spool(pcm, at, dur).name}")
             return
-        store.take(r, at, dur)
+        if store.take(r, at, dur):
+            unsorted_since[:] = [t1]
         if store.waiting():
             landed = store.drain(transcribe)
             if landed:
@@ -332,9 +337,15 @@ def process(chunks: Iterable[tuple[float, np.ndarray]], vad: Vad, transcribe: Ca
         seg = cutter.feed(t, vad.prob(chunk), chunk)
         if seg:
             handle(seg)
+        if unsorted_since and t - unsorted_since[0] >= BURST_GAP_S:
+            unsorted_since.clear()
+            if on_burst_closed:
+                on_burst_closed()
     seg = cutter.flush()
     if seg:
         handle(seg)
+    if unsorted_since and on_burst_closed:
+        on_burst_closed()
 
 
 def parec_chunks(source: str, proc_holder: list) -> Iterator[tuple[float, np.ndarray]]:
@@ -365,11 +376,18 @@ def main(argv: list[str] | None = None) -> int:
         say(f"spool: {len(store.waiting())} waiting, {store.drain(transcribe)} landed")
         return 0
     vad = Vad(ensure_model())
+    def sort_now() -> None:
+        """The sorter, detached: the listener never waits on a model."""
+        if SORTER.exists():
+            subprocess.Popen([str(SORTER)], stdout=sys.stdout, stderr=sys.stderr)
+        else:
+            say(f"no sorter at {SORTER}")
+
     if args.replay:
         pcm = np.frombuffer(Path(args.replay).read_bytes(), dtype=np.int16)
         start = time.time() - len(pcm) / SR
         process(chunks_of(pcm), vad, transcribe, store, dictation=lambda t: FLAG.exists(), clock=lambda t: start + t,
-                pause_ms=pause_ms)
+                pause_ms=pause_ms, on_burst_closed=sort_now)
         return 0
     source = conf("VOICE_IDEAS_SOURCE", "")
     procs: list[subprocess.Popen] = []
@@ -378,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     start = time.time()
     try:
         process(parec_chunks(source, procs), vad, transcribe, store, dictation=lambda t: FLAG.exists(),
-                clock=lambda t: start + t, pause_ms=pause_ms)
+                clock=lambda t: start + t, pause_ms=pause_ms, on_burst_closed=sort_now)
     except KeyboardInterrupt:
         say("stopping")
     finally:

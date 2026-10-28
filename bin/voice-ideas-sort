@@ -1,0 +1,262 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""voice-ideas-sort: a burst of utterances becomes notes, each with the agent it belongs to.
+
+    voice-ideas-sort             sort every closed burst not sorted yet (voice-ideas runs this when one closes)
+    voice-ideas-sort --dry       print what goes to the model and what comes back, write nothing
+    voice-ideas-sort --burst ID  sort that burst again (ID = its first utterance id)
+
+A burst = utterances less than 20 s apart: one train of thought. When it closes, the model splits
+it into separate ideas, cleans the words (fillers out, nothing paraphrased, the language kept) and
+picks for each the one agent it belongs to, from the rows the Sun board shows (Sun's herdr and sg's
+workboards), or none. Each note is one line of ~/.local/share/ormus-voice/ideas/notes.jsonl.
+
+The model is local by default (Ollama on sg, JSON mode, no thinking); the Claude switch is one conf
+line. No model, no board, bad JSON: the burst still lands as one raw note with no target.
+
+Conf (env wins over ~/.config/ormus-voice/voice-flow.conf):
+  VOICE_IDEAS_SORTER        ollama (default) | claude
+  VOICE_IDEAS_MODEL         Ollama model tag (default qwen3.6:35b-a3b-q4_K_M, resident on sg)
+  OLLAMA_HOSTS              base URLs, first that answers wins (default: sg on the HQ LAN, then Tailscale)
+  VOICE_IDEAS_CLAUDE_MODEL  default claude-haiku-4-5; key from ANTHROPIC_API_KEY, ANTHROPIC_API_KEY_FILE,
+                            or ~/.credentials/anthropic/ormus
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+
+BURST_GAP_S = 20
+BOARD = os.environ.get("VOICE_IDEAS_BOARD") or "http://127.0.0.1:7741"
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "ormus-voice"
+CONF = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "ormus-voice"
+IDEAS = DATA / "ideas"
+UTTERANCES, NOTES = IDEAS / "utterances.jsonl", IDEAS / "notes.jsonl"
+OLLAMA_HOSTS_DEFAULT = "http://10.10.90.145:11434 http://100.66.108.108:11434"
+GENERIC_TITLES = {"", "claude code", "grok", "claude", "codex", "shell"}
+TARGET_MACHINES = ("sg",)   # the fleet docs the board can act on (its FLEET_MACHINES)
+
+SYSTEM = """You sort what one person says to himself while he plays a video game. The transcript is his thinking out loud: ideas for his projects, things to do, questions for the agents that work for him. He is never talking to you.
+
+Make notes:
+- One idea, one note. A burst is usually ONE note; it is two or three only when he changes subject (another project, another person, another task). The facets of one idea (what it should do, how it should look, where it should go, why) stay together in that one note, in his order.
+- Keep his words. Take out fillers ("um", "like", "you know"), false starts and repeats. Do not paraphrase, do not summarize, do not add anything. Keep the language he used (English, Spanish, or mixed).
+- Leave out pieces that are not a thought: a reaction to the game, humming, a single word with no idea in it.
+
+Give each note a target: the one agent from TARGETS whose name, workspace or machine the idea is about, by its key. Prefer the row whose name says what the idea is about over a row that only shares a word with it. A train of thought is usually about one project, so the notes of a burst usually share one key. When no row fits, the target is null. Never invent a key.
+
+Answer with JSON only: {"notes": [{"text": "...", "target": "<key or null>", "why": "<ten words at most>"}]}"""
+
+
+def say(msg: str) -> None:
+    print(f"voice-ideas-sort: {msg}", flush=True)
+
+
+def conf(key: str, default: str) -> str:
+    if os.environ.get(key):
+        return os.environ[key]
+    try:
+        for line in (CONF / "voice-flow.conf").read_text().splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return default
+
+
+def load(path: Path) -> list[dict]:
+    try:
+        return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    except OSError:
+        return []
+
+
+def epoch(iso: str) -> float:
+    return datetime.fromisoformat(iso).timestamp()
+
+
+def bursts(utts: list[dict], gap_s: float = BURST_GAP_S) -> list[list[dict]]:
+    """Utterances less than gap_s apart, in order, each group one train of thought."""
+    out: list[list[dict]] = []
+    for u in sorted(utts, key=lambda u: epoch(u["t0"])):
+        if out and epoch(u["t0"]) - epoch(out[-1][-1]["t1"]) < gap_s:
+            out[-1].append(u)
+        else:
+            out.append([u])
+    return out
+
+
+def closed(burst: list[dict], now: float, gap_s: float = BURST_GAP_S) -> bool:
+    return now - epoch(burst[-1]["t1"]) >= gap_s
+
+
+def targets_from(sun: dict | None, fleet: dict | None) -> list[dict]:
+    """The agent rows the board shows and can act on: Sun's herdr sessions and sg's workboards."""
+    rows = []
+
+    def add(host: str, doc: dict | None) -> None:
+        for s in (doc or {}).get("sessions") or []:
+            for w in s.get("workspaces") or []:
+                for a in w.get("agents") or []:
+                    title = (a.get("title") or "").strip()
+                    name = title if title.lower() not in GENERIC_TITLES else re.sub(r"^\d+ · ", "", a.get("tab_label") or "")
+                    rows.append({"key": f"{host}|{s.get('name')}|{a.get('pane')}", "host": host, "session": s.get("name"),
+                                 "workspace": w.get("label") or "", "pane": a.get("pane"), "agent": a.get("agent") or "",
+                                 "name": name or "(no name)", "status": a.get("status") or ""})
+
+    add("sun", sun)
+    for machine in TARGET_MACHINES:
+        add(machine, ((fleet or {}).get("docs") or {}).get(machine))
+    return rows
+
+
+def fetch_json(url: str, timeout: float = 3.0) -> dict | None:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except (OSError, ValueError) as e:
+        say(f"{url}: {e}")
+        return None
+
+
+def fetch_targets(board: str = BOARD) -> list[dict]:
+    return targets_from(fetch_json(f"{board}/data/sun.json"), fetch_json(f"{board}/data/fleet.json"))
+
+
+def user_text(burst: list[dict], targets: list[dict]) -> str:
+    lines = ["TARGETS (key: machine · session · workspace · name):"]
+    lines += [f"{t['key']}: {t['host']} · {t['session']} · {t['workspace']} · {t['name']}" for t in sorted(targets, key=lambda t: t["key"])] or ["(none)"]
+    lines += ["", "TRANSCRIPT (pieces in order; [+N s] = the pause before the piece):"]
+    prev = None
+    for u in burst:
+        gap = 0 if prev is None else round(epoch(u["t0"]) - epoch(prev["t1"]))
+        lines.append(f"[+{gap} s] {u['text']}")
+        prev = u
+    return "\n".join(lines)
+
+
+def parse(answer: str, targets: list[dict], burst: list[dict]) -> list[dict]:
+    """The model's notes, each target checked against the list; no JSON means one raw note."""
+    by_key = {t["key"]: t for t in targets}
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (answer or "").strip())
+    try:
+        doc = json.loads(text)
+        notes = doc["notes"] if isinstance(doc, dict) else doc
+        assert isinstance(notes, list)
+    except (ValueError, KeyError, AssertionError, TypeError):
+        return [{"text": " ".join(u["text"] for u in burst), "target": None, "why": "unsorted: the sorter gave no JSON"}]
+    out: list[dict] = []
+    for n in notes:
+        if not isinstance(n, dict) or not str(n.get("text") or "").strip():
+            continue
+        t = by_key.get(n.get("target")) if isinstance(n.get("target"), str) else None
+        target = {k: t[k] for k in ("key", "host", "session", "pane", "workspace", "name")} if t else None
+        note = {"text": str(n["text"]).strip(), "target": target, "why": str(n.get("why") or "")[:120]}
+        # One burst, one agent, one note: the model likes to cut an idea into its facets (measured on
+        # his 20:03 ramble: four notes, all for the same agent). Facets that follow each other to the
+        # same agent join into one note, one paste. Notes with no agent stay apart.
+        if out and target and out[-1]["target"] == target:
+            out[-1]["text"] += "\n" + note["text"]
+        else:
+            out.append(note)
+    return out or [{"text": " ".join(u["text"] for u in burst), "target": None, "why": "unsorted: the sorter gave no notes"}]
+
+
+def sort_once(utt_path: Path, notes_path: Path, llm: Callable[[str, str], str], targets: list[dict], now: float,
+              gap_s: float = BURST_GAP_S, force: str | None = None, dry: bool = False) -> int:
+    """Every closed burst not sorted yet (or the forced one) through the model, into notes.jsonl. Returns notes written."""
+    done = {n["burst"] for n in load(notes_path)}
+    written = 0
+    for burst in bursts(load(utt_path), gap_s):
+        bid = burst[0]["id"]
+        if force is not None:
+            if bid != force:
+                continue
+        elif bid in done or not closed(burst, now, gap_s):
+            continue
+        user = user_text(burst, targets)
+        try:
+            answer = llm(SYSTEM, user)
+        except Exception as e:  # noqa: BLE001  a model that is down must not lose the burst
+            say(f"model failed: {e}")
+            answer = ""
+        notes = parse(answer, targets, burst)
+        if dry:
+            print(user, "\n--- answer ---\n", answer, "\n--- notes ---\n", json.dumps(notes, ensure_ascii=False, indent=1))
+            continue
+        at = datetime.fromtimestamp(now, timezone.utc).astimezone().isoformat(timespec="seconds")
+        notes_path.parent.mkdir(parents=True, exist_ok=True)
+        with notes_path.open("a") as f:
+            for i, n in enumerate(notes):
+                row = {"id": f"n-{int(now * 1000)}-{i}", "burst": bid, "utterances": [u["id"] for u in burst], "at": at, **n}
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                written += 1
+                say(f"note -> {(n['target'] or {}).get('name') or 'no target'}: {n['text'][:80]!r}")
+    return written
+
+
+def llm_ollama(system: str, user: str) -> str:
+    model = conf("VOICE_IDEAS_MODEL", "qwen3.6:35b-a3b-q4_K_M")
+    host = ""
+    for h in (os.environ.get("OLLAMA_HOST") or conf("OLLAMA_HOSTS", OLLAMA_HOSTS_DEFAULT)).split():
+        try:
+            urllib.request.urlopen(f"{h}/api/version", timeout=1.0).close()
+            host = h
+            break
+        except OSError:
+            continue
+    if not host:
+        raise RuntimeError("no Ollama host answers")
+    body = {"model": model, "stream": False, "think": False, "format": "json", "keep_alive": -1,
+            "options": {"temperature": 0}, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    req = urllib.request.Request(f"{host}/api/chat", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.load(r)["message"]["content"]
+
+
+def anthropic_key() -> str:
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return os.environ["ANTHROPIC_API_KEY"]
+    for p in [os.environ.get("ANTHROPIC_API_KEY_FILE"), HOME / ".credentials/anthropic/ormus"]:
+        if p and Path(p).is_file():
+            return Path(p).read_text().strip()
+    raise RuntimeError("no Anthropic key: set ANTHROPIC_API_KEY or ANTHROPIC_API_KEY_FILE")
+
+
+def llm_claude(system: str, user: str) -> str:
+    body = {"model": conf("VOICE_IDEAS_CLAUDE_MODEL", "claude-haiku-4-5"), "max_tokens": 1024, "temperature": 0,
+            "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user", "content": user}]}
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json", "x-api-key": anthropic_key(), "anthropic-version": "2023-06-01"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)["content"][0]["text"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="a burst of utterances becomes notes with a target agent")
+    ap.add_argument("--dry", action="store_true", help="print the exchange, write nothing")
+    ap.add_argument("--burst", metavar="ID", help="sort that burst again")
+    args = ap.parse_args(argv)
+    llm = llm_claude if conf("VOICE_IDEAS_SORTER", "ollama") == "claude" else llm_ollama
+    targets = fetch_targets()
+    n = sort_once(UTTERANCES, NOTES, llm, targets, now=time.time(), force=args.burst, dry=args.dry)
+    say(f"{n} notes written ({len(targets)} targets on the board)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
