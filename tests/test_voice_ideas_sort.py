@@ -127,6 +127,19 @@ class Sort(unittest.TestCase):
         self.assertIn("the sun board should show my voice notes", llm.calls[0][1], "the burst text reaches the model")
         self.assertIn("sg|raven|w2:p3", llm.calls[0][1], "and the target keys")
 
+    def test_facets_to_the_same_agent_join_into_one_note(self):
+        llm = FakeLLM([json.dumps({"notes": [
+            {"text": "speak into the mic and it hears everything", "target": "sun|default|w1:p1", "why": "a"},
+            {"text": "then a dashboard I can copy from", "target": "sun|default|w1:p1", "why": "b"},
+            {"text": "the raven rate team switch is broken", "target": "sg|raven|w2:p3", "why": "c"},
+            {"text": "loose end one", "target": None, "why": "d"},
+            {"text": "loose end two", "target": None, "why": "e"}]})])
+        self.vs.sort_once(self.utts, self.notes, llm, TARGETS, now=T0 + 19 + 25)
+        rows = self.rows()
+        self.assertEqual([(r["target"] or {}).get("key") for r in rows], ["sun|default|w1:p1", "sg|raven|w2:p3", None, None])
+        self.assertEqual(rows[0]["text"], "speak into the mic and it hears everything\nthen a dashboard I can copy from")
+        self.assertEqual(rows[0]["why"], "a")
+
     def test_an_open_burst_waits_and_a_sorted_one_is_not_sorted_twice(self):
         llm = FakeLLM([json.dumps({"notes": [{"text": "x", "target": None, "why": ""}]})] * 3)
         self.vs.sort_once(self.utts, self.notes, llm, TARGETS, now=T0 + 19 + 25)

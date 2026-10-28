@@ -52,11 +52,11 @@ TARGET_MACHINES = ("sg",)   # the fleet docs the board can act on (its FLEET_MAC
 SYSTEM = """You sort what one person says to himself while he plays a video game. The transcript is his thinking out loud: ideas for his projects, things to do, questions for the agents that work for him. He is never talking to you.
 
 Make notes:
-- Split the transcript into separate ideas. One idea, one note. A thought that continues across pieces is one note.
+- One idea, one note. A burst is usually ONE note; it is two or three only when he changes subject (another project, another person, another task). The facets of one idea (what it should do, how it should look, where it should go, why) stay together in that one note, in his order.
 - Keep his words. Take out fillers ("um", "like", "you know"), false starts and repeats. Do not paraphrase, do not summarize, do not add anything. Keep the language he used (English, Spanish, or mixed).
 - Leave out pieces that are not a thought: a reaction to the game, humming, a single word with no idea in it.
 
-Give each note a target: the one agent from TARGETS whose name, workspace or machine the idea is about, by its key. When no row fits, the target is null. Never invent a key.
+Give each note a target: the one agent from TARGETS whose name, workspace or machine the idea is about, by its key. Prefer the row whose name says what the idea is about over a row that only shares a word with it. A train of thought is usually about one project, so the notes of a burst usually share one key. When no row fits, the target is null. Never invent a key.
 
 Answer with JSON only: {"notes": [{"text": "...", "target": "<key or null>", "why": "<ten words at most>"}]}"""
 
@@ -137,8 +137,8 @@ def fetch_targets(board: str = BOARD) -> list[dict]:
 
 
 def user_text(burst: list[dict], targets: list[dict]) -> str:
-    lines = ["TARGETS (key: machine · session · workspace · name · status):"]
-    lines += [f"{t['key']}: {t['host']} · {t['session']} · {t['workspace']} · {t['name']} · {t['status']}" for t in targets] or ["(none)"]
+    lines = ["TARGETS (key: machine · session · workspace · name):"]
+    lines += [f"{t['key']}: {t['host']} · {t['session']} · {t['workspace']} · {t['name']}" for t in sorted(targets, key=lambda t: t["key"])] or ["(none)"]
     lines += ["", "TRANSCRIPT (pieces in order; [+N s] = the pause before the piece):"]
     prev = None
     for u in burst:
@@ -158,13 +158,20 @@ def parse(answer: str, targets: list[dict], burst: list[dict]) -> list[dict]:
         assert isinstance(notes, list)
     except (ValueError, KeyError, AssertionError, TypeError):
         return [{"text": " ".join(u["text"] for u in burst), "target": None, "why": "unsorted: the sorter gave no JSON"}]
-    out = []
+    out: list[dict] = []
     for n in notes:
         if not isinstance(n, dict) or not str(n.get("text") or "").strip():
             continue
         t = by_key.get(n.get("target")) if isinstance(n.get("target"), str) else None
         target = {k: t[k] for k in ("key", "host", "session", "pane", "workspace", "name")} if t else None
-        out.append({"text": str(n["text"]).strip(), "target": target, "why": str(n.get("why") or "")[:120]})
+        note = {"text": str(n["text"]).strip(), "target": target, "why": str(n.get("why") or "")[:120]}
+        # One burst, one agent, one note: the model likes to cut an idea into its facets (measured on
+        # his 20:03 ramble: four notes, all for the same agent). Facets that follow each other to the
+        # same agent join into one note, one paste. Notes with no agent stay apart.
+        if out and target and out[-1]["target"] == target:
+            out[-1]["text"] += "\n" + note["text"]
+        else:
+            out.append(note)
     return out or [{"text": " ".join(u["text"] for u in burst), "target": None, "why": "unsorted: the sorter gave no notes"}]
 
 
