@@ -135,3 +135,30 @@ class Hosts(unittest.TestCase):
                            env=self.env, capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "42")
         self.assertIn("http://10.10.90.145:11434/api/version", log_lines(self.env, "curl")[0])
+
+
+class Style(unittest.TestCase):
+    """voice-rewrite-ollama puts the Express tone into its prompt."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, STUB_OLLAMA_RESPONSE='{"response":"Hello."}')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def prompt_sent(self, express: str | None) -> str:
+        if express is not None:
+            self.env["VOICE_FLOW_EXPRESS"] = express
+        subprocess.run([str(BIN / "voice-rewrite-ollama")], input="um hello",
+                       env=self.env, capture_output=True, text=True)
+        return "\n".join(log_lines(self.env, "curl"))
+
+    def test_casual_style_line(self):
+        self.assertIn("STYLE: Casual.", self.prompt_sent("casual"))
+
+    def test_formal_is_the_default_style(self):
+        self.assertIn("STYLE: Formal.", self.prompt_sent(None))
+
+    def test_unknown_value_reads_as_formal(self):
+        self.assertIn("STYLE: Formal.", self.prompt_sent("shouty"))

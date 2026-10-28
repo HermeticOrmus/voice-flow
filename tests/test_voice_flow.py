@@ -72,3 +72,40 @@ class Inject(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Express(unittest.TestCase):
+    """Express is the tone of the cleanup: formal, casual, or verbatim (no rewrite)."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, VOICE_FLOW_PILL="0", STUB_TEXT=LONG, STUB_CLASS="firefox")
+        conf = self.tmp / "config" / "ormus-voice"
+        conf.mkdir(parents=True)
+        shutil.copy(REPO / "config" / "app-profiles.conf", conf / "app-profiles.conf")
+        self.conf = conf / "voice-flow.conf"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_verbatim_skips_the_rewrite(self):
+        self.conf.write_text("VOICE_FLOW_EXPRESS=verbatim\n")
+        dictate(self.env)
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "")
+
+    def test_casual_keeps_the_rewrite(self):
+        self.conf.write_text("VOICE_FLOW_EXPRESS=casual\n")
+        dictate(self.env)
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
+
+    def test_unknown_value_reads_as_formal(self):
+        self.conf.write_text("VOICE_FLOW_EXPRESS=shouty\n")
+        r = dictate(self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
+
+    def test_terminal_stays_verbatim_whatever_the_express(self):
+        self.conf.write_text("VOICE_FLOW_EXPRESS=formal\n")
+        self.env["STUB_CLASS"] = "foot"
+        dictate(self.env)
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "")
