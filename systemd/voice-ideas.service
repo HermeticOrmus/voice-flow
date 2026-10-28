@@ -1,0 +1,14 @@
+[Unit]
+Description=voice-ideas: listen while gaming, one log line per utterance (ships dark: start it by hand or from the Sun board)
+After=pipewire.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/voice-ideas
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
