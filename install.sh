@@ -33,9 +33,12 @@ fi
 
 if command -v cargo >/dev/null 2>&1; then
     echo "building voice-flow-panel…"
-    ( cd "$HERE/panel" && cargo build --release -q )
-    ln -sf "$HERE/panel/target/release/voice-flow-panel" "$BIN/voice-flow-panel"
-    echo "linked voice-flow-panel"
+    if ( cd "$HERE/panel" && cargo build --release -q ); then
+        ln -sf "$HERE/panel/target/release/voice-flow-panel" "$BIN/voice-flow-panel"
+        echo "linked voice-flow-panel"
+    else
+        echo "WARN: voice-flow-panel did not build (is a Rust toolchain set? rustup default stable); dictation works without it"
+    fi
     # COSMIC only: reads cosmic-toplevel-info-v1. On Hyprland it cannot connect
     # and voice-flow falls back to hyprctl, so a failed build is not fatal.
     echo "building ormus-active-window…"
