@@ -76,6 +76,18 @@ transcribes the spool. The mechanism was settled by the spike in `docs/spikes/va
 of his utterances on the DJI; the thread pools must be pinned or they spin a whole core; whisper's
 `avg_logprob` under -1.5 marks junk. `./check.sh` runs the tests (uv supplies the packages).
 
+## Express
+
+`VOICE_FLOW_EXPRESS` is the shape of the cleanup. `prompt`, the default,
+writes the prompt you meant for a coding agent: every request, observation
+and question stays; thinking-aloud and a thought that trails off go; a
+self-correction keeps its final version; technical names stay verbatim and
+in the case heard; one idea per sentence, plain prose. `formal` and
+`casual` clean prose in that tone. `verbatim` skips the rewrite. The pill
+shows the word that will apply while you speak. The wait for the model is
+15 s plus a second per 100 characters, and the context window holds a long
+rant (16k tokens).
+
 ## Per-app profiles
 
 `~/.config/ormus-voice/app-profiles.conf` maps focused `app_id` globs to
@@ -174,7 +186,7 @@ Raw passthrough when no host answers. Override with `VOICE_PASTE_REMOTE=off`,
 `~/.config/ormus-voice/voice-flow.conf` (shell `KEY=value`, sourced each run;
 written key by key by the panel and the web settings): `VOICE_FLOW_METHOD`,
 `VOICE_PASTE_MODEL` (local fallback), `VOICE_FLOW_REWRITE`, `VOICE_FLOW_EXPRESS`
-(formal, casual, verbatim), `VOICE_FLOW_PILL`, `VOICE_FLOW_PARTIALS`,
+(prompt, formal, casual, verbatim), `VOICE_FLOW_PILL`, `VOICE_FLOW_PARTIALS`,
 `VOICE_FLOW_LOG_TEXT` (1 keeps transcript text in the history log).
 
 ## History / stats
