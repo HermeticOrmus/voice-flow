@@ -123,13 +123,28 @@ RUNTIME = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 STATE_FILE = os.path.join(RUNTIME, "ormus-voice", "pill.state")
 
 # Live partials: while listening, the pill re-transcribes its own mic
-# tap every ~1.2s against the same CUDA server as the final transcript
-# (Sun :8093, then sg). Feedback only — the injected text still comes
+# tap every ~1.2s against the same whisper servers as the final transcript
+# (VOICE_PASTE_REMOTE_HOSTS). Feedback only — the injected text still comes
 # from the stop-time pass.
 PARTIALS_ON = os.environ.get("VOICE_FLOW_PARTIALS", "1") != "0"
-PARTIAL_HOSTS = os.environ.get(
-    "VOICE_FLOW_PARTIAL_HOSTS",
-    "127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093").split()
+
+
+def _conf_value(key):
+    """KEY="value" from voice-flow.conf, "" when absent."""
+    path = os.environ.get("VOICE_FLOW_CONF") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "ormus-voice", "voice-flow.conf")
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return ""
+
+
+PARTIAL_HOSTS = (os.environ.get("VOICE_FLOW_PARTIAL_HOSTS") or os.environ.get("VOICE_PASTE_REMOTE_HOSTS")
+                 or _conf_value("VOICE_PASTE_REMOTE_HOSTS") or "127.0.0.1:8093").split()
 PARTIAL_WINDOW_S = 6       # sliding window of audio re-sent each tick; the pill
                            # shows only the tail (~60 chars), 6 s of speech covers it
 PARTIAL_TICK_S = 1.2

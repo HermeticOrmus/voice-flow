@@ -38,11 +38,7 @@ CONF = os.path.join(CONF_DIR, "voice-flow.conf")
 BACKEND_STATE = os.path.join(DATA, "backend.state")
 
 PORT = int(os.environ.get("VOICE_FLOW_WEB_PORT", "7385"))
-HOSTS = {
-    "127.0.0.1:8093": "sun",
-    "10.10.90.145:8093": "sg · HQ LAN",
-    "100.66.108.108:8093": "sg · Tailscale",
-}
+DEFAULT_HOSTS = "127.0.0.1:8093"
 CONF_KEYS = ["VOICE_FLOW_METHOD", "VOICE_PASTE_MODEL", "VOICE_FLOW_REWRITE",
              "VOICE_FLOW_PILL", "VOICE_FLOW_LOG_TEXT", "VOICE_FLOW_PARTIALS"]
 TYPING_WPM = 40.0   # what the same words would cost on a keyboard
@@ -189,9 +185,25 @@ def write_conf(cfg):
         f.write("\n".join(out) + "\n")
 
 
+def hosts():
+    """whisper-paste's servers in its order, with the names a person reads: VOICE_PASTE_REMOTE_HOSTS
+    and VOICE_HOST_NAMES ("host=name;host=name"), the environment first, then voice-flow.conf.
+    This machine's :8093 by default; a host with no name reads as its address."""
+    cfg = read_conf()
+    pick = lambda key: os.environ.get(key) or cfg.get(key, "")
+    names = {}
+    for pair in pick("VOICE_HOST_NAMES").split(";"):
+        if "=" in pair:
+            host, name = pair.split("=", 1)
+            names[host.strip()] = name.strip()
+    order = (pick("VOICE_PASTE_REMOTE_HOSTS") or DEFAULT_HOSTS).split()
+    return {h: names.get(h) or ("this machine" if h.startswith(("127.", "localhost")) else h) for h in order}
+
+
 def engine():
     reachable = None
-    for ip, name in HOSTS.items():
+    known = hosts()
+    for ip, name in known.items():
         try:
             urllib.request.urlopen("http://%s/" % ip, timeout=0.5)
             reachable = name
@@ -209,7 +221,7 @@ def engine():
         pass
     if last.startswith("remote "):
         token = last.split()[1]
-        last = HOSTS.get(token, last)
+        last = known.get(token, last)
     elif last.startswith("local "):
         last = "local fallback (%s)" % last[6:]
     return {"reachable": reachable, "last_backend": last}

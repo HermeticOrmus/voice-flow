@@ -28,10 +28,17 @@ MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # resident on sg GPU 0 (Ollama's lan
 # character rant came back in 3 s warm. A cold load adds a few seconds.
 TIMEOUT=$(( ${VOICE_REWRITE_TIMEOUT:-15} + ${#INPUT} / 100 ))
 
-# Host resolution: explicit OLLAMA_HOST wins; otherwise probe the list
-# and take the first that answers /api/version. qwen3:32b does not fit
-# beside large-v3-turbo on Sun's 12 GB card, so rewrite lives on sg.
-HOSTS="${OLLAMA_HOSTS:-http://10.10.90.145:11434 http://100.66.108.108:11434}"
+# Host resolution: explicit OLLAMA_HOST wins; otherwise probe OLLAMA_HOSTS (voice-flow.conf or the
+# environment; this machine by default) and take the first that answers /api/version.
+# A host list the environment does not set comes from voice-flow.conf (KEY="value" lines, as the
+# panel writes them); with neither, this machine.
+conf_value() {
+    local conf="${VOICE_FLOW_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice/voice-flow.conf}"
+    [ -f "$conf" ] || return 0
+    sed -n "s/^$1=//p" "$conf" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+HOSTS="${OLLAMA_HOSTS:-$(conf_value OLLAMA_HOSTS)}"
+HOSTS="${HOSTS:-http://127.0.0.1:11434}"
 HOST=""
 if [ -n "${OLLAMA_HOST:-}" ]; then
     HOST="$OLLAMA_HOST"

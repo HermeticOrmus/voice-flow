@@ -395,10 +395,12 @@ fn numbers_row(state: &Label) -> Box {
             let last = std::fs::read_to_string(&backend).unwrap_or_default();
             let engine = engine.clone();
             glib::spawn_future_local(async move {
-                let up = gio::spawn_blocking(status::reachable).await.ok().flatten();
+                let hosts = status::read_hosts();
+                let probe_hosts = hosts.clone();
+                let up = gio::spawn_blocking(move || status::reachable(&probe_hosts)).await.ok().flatten();
                 engine.set_text(&format!(
                     "engine · last {} · {}",
-                    status::backend_label(last.trim()),
+                    status::backend_label(last.trim(), &hosts),
                     up.map(|n| format!("{n} answers"))
                         .unwrap_or_else(|| "no host answers".into())
                 ));

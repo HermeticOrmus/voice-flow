@@ -20,7 +20,7 @@ line. No model, no board, bad JSON: the burst still lands as one raw note with n
 Conf (env wins over ~/.config/ormus-voice/voice-flow.conf):
   VOICE_IDEAS_SORTER        ollama (default) | claude
   VOICE_IDEAS_MODEL         Ollama model tag (default qwen3.6:35b-a3b-q4_K_M, resident on sg)
-  OLLAMA_HOSTS              base URLs, first that answers wins (default: sg on the HQ LAN, then Tailscale)
+  OLLAMA_HOSTS              base URLs, first that answers wins (default: this machine's Ollama)
   VOICE_IDEAS_CLAUDE_MODEL  default claude-haiku-4-5; key from ANTHROPIC_API_KEY, ANTHROPIC_API_KEY_FILE,
                             or ~/.credentials/anthropic/ormus
 """
@@ -45,7 +45,7 @@ DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share") / "ormus-v
 CONF = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "ormus-voice"
 IDEAS = DATA / "ideas"
 UTTERANCES, NOTES = IDEAS / "utterances.jsonl", IDEAS / "notes.jsonl"
-OLLAMA_HOSTS_DEFAULT = "http://10.10.90.145:11434 http://100.66.108.108:11434"
+OLLAMA_HOSTS_DEFAULT = "http://127.0.0.1:11434"
 GENERIC_TITLES = {"", "claude code", "grok", "claude", "codex", "shell"}
 TARGET_MACHINES = ("sg",)   # the fleet docs the board can act on (its FLEET_MACHINES)
 
@@ -208,10 +208,16 @@ def sort_once(utt_path: Path, notes_path: Path, llm: Callable[[str, str], str], 
     return written
 
 
+def ollama_hosts() -> list[str]:
+    """OLLAMA_HOST outright, else the OLLAMA_HOSTS list (environment, then voice-flow.conf), else
+    this machine's Ollama."""
+    return (os.environ.get("OLLAMA_HOST") or conf("OLLAMA_HOSTS", OLLAMA_HOSTS_DEFAULT)).split()
+
+
 def llm_ollama(system: str, user: str) -> str:
     model = conf("VOICE_IDEAS_MODEL", "qwen3.6:35b-a3b-q4_K_M")
     host = ""
-    for h in (os.environ.get("OLLAMA_HOST") or conf("OLLAMA_HOSTS", OLLAMA_HOSTS_DEFAULT)).split():
+    for h in ollama_hosts():
         try:
             urllib.request.urlopen(f"{h}/api/version", timeout=1.0).close()
             host = h

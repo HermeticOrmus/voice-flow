@@ -25,7 +25,15 @@ VOCAB_FILE="$CONF_DIR/vocabulary.txt"
 SUBS_FILE="$CONF_DIR/substitutions.tsv"
 JOURNAL="$DATA_DIR/corrections.jsonl"
 TAKES="${VOICE_TRAIN_TAKES:-2}"
-REMOTE_HOSTS="${VOICE_PASTE_REMOTE_HOSTS:-127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093}"
+# A host list the environment does not set comes from voice-flow.conf (KEY="value" lines, as the
+# panel writes them); with neither, this machine.
+conf_value() {
+    local conf="${VOICE_FLOW_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice/voice-flow.conf}"
+    [ -f "$conf" ] || return 0
+    sed -n "s/^$1=//p" "$conf" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+REMOTE_HOSTS="${VOICE_PASTE_REMOTE_HOSTS:-$(conf_value VOICE_PASTE_REMOTE_HOSTS)}"
+REMOTE_HOSTS="${REMOTE_HOSTS:-127.0.0.1:8093}"
 mkdir -p "$CONF_DIR" "$DATA_DIR"
 
 # --- transcribe one take, RAW (no vocab prompt) ----------------------

@@ -25,7 +25,15 @@ INPUT=$(cat)
 MODEL="${VOICE_AGENT_MODEL:-llama3.2:3b}"
 TIMEOUT="${VOICE_AGENT_TIMEOUT:-20}"
 
-HOSTS="${OLLAMA_HOSTS:-http://10.10.90.145:11434 http://100.66.108.108:11434}"
+# A host list the environment does not set comes from voice-flow.conf (KEY="value" lines, as the
+# panel writes them); with neither, this machine.
+conf_value() {
+    local conf="${VOICE_FLOW_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice/voice-flow.conf}"
+    [ -f "$conf" ] || return 0
+    sed -n "s/^$1=//p" "$conf" | tail -n 1 | sed 's/^"//; s/"$//'
+}
+HOSTS="${OLLAMA_HOSTS:-$(conf_value OLLAMA_HOSTS)}"
+HOSTS="${HOSTS:-http://127.0.0.1:11434}"
 HOST=""
 if [ -n "${OLLAMA_HOST:-}" ]; then
     HOST="$OLLAMA_HOST"

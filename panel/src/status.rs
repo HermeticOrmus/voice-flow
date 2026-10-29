@@ -1,18 +1,46 @@
 //! What the panel shows live: the dictation state, the engine that served
 //! the last take, and today's numbers. Pure functions take their inputs;
 //! the `read_*` wrappers read the files voice-flow and whisper-paste write.
+use std::collections::HashMap;
 use std::fs;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-/// Hosts whisper-paste probes, in its order, with the names a person reads.
-pub const HOSTS: &[(&str, &str)] = &[
-    ("127.0.0.1:8093", "Sun"),
-    ("10.10.90.145:8093", "sg · HQ LAN"),
-    ("100.66.108.108:8093", "sg · Tailscale"),
-];
+/// The whisper servers whisper-paste probes, in its order, with the names a person reads:
+/// VOICE_PASTE_REMOTE_HOSTS and VOICE_HOST_NAMES ("host=name;host=name"). This machine's :8093 when
+/// none are named; a host with no name reads as its address.
+pub fn hosts(conf: &HashMap<String, String>) -> Vec<(String, String)> {
+    let names: HashMap<&str, &str> = conf
+        .get("VOICE_HOST_NAMES")
+        .map(|v| v.split(';').filter_map(|p| p.split_once('=')).map(|(h, n)| (h.trim(), n.trim())).collect())
+        .unwrap_or_default();
+    let order = conf.get("VOICE_PASTE_REMOTE_HOSTS").map(String::as_str).filter(|v| !v.trim().is_empty());
+    order
+        .unwrap_or("127.0.0.1:8093")
+        .split_whitespace()
+        .map(|h| {
+            let name = names.get(h).map(|n| n.to_string()).unwrap_or_else(|| {
+                if h.starts_with("127.") || h.starts_with("localhost") { "this machine".into() } else { h.into() }
+            });
+            (h.to_string(), name)
+        })
+        .collect()
+}
+
+/// The hosts from voice-flow.conf, the environment first, as the scripts read them.
+pub fn read_hosts() -> Vec<(String, String)> {
+    let mut conf = crate::store::load_conf(&crate::store::conf_path());
+    for key in ["VOICE_PASTE_REMOTE_HOSTS", "VOICE_HOST_NAMES"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                conf.insert(key.to_string(), v);
+            }
+        }
+    }
+    hosts(&conf)
+}
 
 pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -40,14 +68,14 @@ pub fn read_state() -> &'static str {
     state(dir.join("recording.state").exists(), pill.trim())
 }
 
-/// "remote 127.0.0.1:8093" reads as Sun; "local base.en" as the fallback.
-pub fn backend_label(backend: &str) -> String {
+/// "remote 127.0.0.1:8093" reads as that host's name; "local base.en" as the fallback.
+pub fn backend_label(backend: &str, hosts: &[(String, String)]) -> String {
     let mut words = backend.split_whitespace();
     match (words.next(), words.next()) {
-        (Some("remote"), Some(host)) => HOSTS
+        (Some("remote"), Some(host)) => hosts
             .iter()
-            .find(|(h, _)| *h == host)
-            .map(|(_, name)| name.to_string())
+            .find(|(h, _)| h == host)
+            .map(|(_, name)| name.clone())
             .unwrap_or_else(|| host.to_string()),
         (Some("local"), Some(model)) => format!("local fallback ({model})"),
         _ => "—".to_string(),
@@ -56,12 +84,12 @@ pub fn backend_label(backend: &str) -> String {
 
 /// The first host that accepts a TCP connection, by name. Blocks up to
 /// 300 ms per host: call it off the main thread.
-pub fn reachable() -> Option<&'static str> {
-    HOSTS.iter().find_map(|(host, name)| {
+pub fn reachable(hosts: &[(String, String)]) -> Option<String> {
+    hosts.iter().find_map(|(host, name)| {
         let addr = host.to_socket_addrs().ok()?.next()?;
         TcpStream::connect_timeout(&addr, Duration::from_millis(300))
             .ok()
-            .map(|_| *name)
+            .map(|_| name.clone())
     })
 }
 

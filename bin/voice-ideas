@@ -26,7 +26,8 @@ records (voice-flow's recording.state); start on login (the unit ships dark).
 
 Conf (env wins over ~/.config/ormus-voice/voice-flow.conf):
   VOICE_IDEAS_SOURCE    PipeWire source name (default: the default source)
-  VOICE_IDEAS_HOSTS     whisper-server host:port list, first that answers wins
+  VOICE_IDEAS_HOSTS     whisper-server host:port list, first that answers wins (default:
+                        VOICE_PASTE_REMOTE_HOSTS, else this machine's :8093)
   VOICE_IDEAS_PAUSE_MS  the pause that ends an utterance (default 1500)
 """
 from __future__ import annotations
@@ -81,7 +82,6 @@ LOG = IDEAS / "utterances.jsonl"
 SPOOL = IDEAS / "spool"
 VOCAB = CONF / "vocabulary.txt"
 FLAG = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "ormus-voice" / "recording.state"
-HOSTS_DEFAULT = "127.0.0.1:8093 10.10.90.145:8093 100.66.108.108:8093"
 
 
 def say(msg: str) -> None:
@@ -99,6 +99,12 @@ def conf(key: str, default: str) -> str:
     except OSError:
         pass
     return default
+
+
+def whisper_hosts() -> list[str]:
+    """The whisper servers to try, in order: the listener's own list, else dictation's, else this
+    machine's."""
+    return conf("VOICE_IDEAS_HOSTS", conf("VOICE_PASTE_REMOTE_HOSTS", "127.0.0.1:8093")).split()
 
 
 def vocabulary() -> str:
@@ -369,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--replay", metavar="RAW", help="run over a raw s16le 16 kHz mono file, then exit")
     ap.add_argument("--drain", action="store_true", help="transcribe what waits in the spool, then exit")
     args = ap.parse_args(argv)
-    hosts = conf("VOICE_IDEAS_HOSTS", HOSTS_DEFAULT).split()
+    hosts = whisper_hosts()
     pause_ms = int(conf("VOICE_IDEAS_PAUSE_MS", str(PAUSE_MS_DEFAULT)))
     store, transcribe = Store(), transcriber(hosts, vocabulary())
     if args.drain:
