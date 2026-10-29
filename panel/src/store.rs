@@ -260,6 +260,15 @@ mod tests {
     }
 
     #[test]
+    fn prompt_is_the_default_express() {
+        assert_eq!(Express::parse(""), Express::Prompt);
+        assert_eq!(Express::parse("shouty"), Express::Prompt);
+        assert_eq!(Express::parse("formal"), Express::Formal);
+        assert_eq!(Express::Prompt.as_str(), "prompt");
+        assert_eq!(load_express(Path::new("/nonexistent/voice-flow.conf")), Express::Prompt);
+    }
+
+    #[test]
     fn express_preserves_other_keys() {
         let root = dir();
         let path = root.join("voice-flow.conf");
