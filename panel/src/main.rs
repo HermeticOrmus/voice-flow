@@ -57,7 +57,7 @@ fn build(app: &Application) {
     head.append(&title);
     head.append(&state);
     let note = Label::new(Some(
-        "Dictionary and substitutions apply on the next Super+H. Terminals stay verbatim.",
+        "Dictionary and substitutions apply on the next Super+H. Prompt writes the prompt you meant for your agent; Verbatim turns the clean-up off.",
     ));
     note.add_css_class("muted");
     note.set_halign(Align::Start);
@@ -69,17 +69,21 @@ fn build(app: &Application) {
     let express_row = Box::new(Orientation::Horizontal, 8);
     let express_label = Label::new(Some("EXPRESS"));
     express_label.add_css_class("section");
+    let prompt = ToggleButton::with_label("Prompt");
     let formal = ToggleButton::with_label("Formal");
     let casual = ToggleButton::with_label("Casual");
     let verbatim = ToggleButton::with_label("Verbatim");
-    casual.set_group(Some(&formal));
-    verbatim.set_group(Some(&formal));
+    formal.set_group(Some(&prompt));
+    casual.set_group(Some(&prompt));
+    verbatim.set_group(Some(&prompt));
     match store::load_express(&store::conf_path()) {
+        Express::Prompt => prompt.set_active(true),
         Express::Formal => formal.set_active(true),
         Express::Casual => casual.set_active(true),
         Express::Verbatim => verbatim.set_active(true),
     }
     for (button, value) in [
+        (&prompt, Express::Prompt),
         (&formal, Express::Formal),
         (&casual, Express::Casual),
         (&verbatim, Express::Verbatim),
@@ -91,6 +95,7 @@ fn build(app: &Application) {
         });
     }
     express_row.append(&express_label);
+    express_row.append(&prompt);
     express_row.append(&formal);
     express_row.append(&casual);
     express_row.append(&verbatim);

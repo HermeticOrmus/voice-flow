@@ -17,7 +17,7 @@ runs), builds the Rust helpers, and prints the key bind. On Sun the bind is
 | `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper (remote-first, see below) → hallucination filter → optional LLM rewrite. |
 | `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
 | `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
-| `voice-flow-panel` | Rust GTK4 window, the one control surface: live state, today's numbers, the engine, Express (formal, casual, verbatim), inject method and switches, Dictate and Agent, dictionary, substitutions, last paste. Writes each conf key in place. Launcher "Voice Flow". |
+| `voice-flow-panel` | Rust GTK4 window, the one control surface: live state, today's numbers, the engine, Express (prompt, formal, casual, verbatim), inject method and switches, Dictate and Agent, dictionary, substitutions, last paste. Writes each conf key in place. Launcher "Voice Flow". |
 | `voice-flow-web` | Rich analytics dashboard: charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. Runs on Sun (`http://127.0.0.1:7385`, the panel's Analytics button) AND on Mars (corvin-mini), where it backs the portal. |
 
 ## The portal — voice.ormus.solutions

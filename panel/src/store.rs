@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Express {
+    Prompt,
     Formal,
     Casual,
     Verbatim,
@@ -13,17 +14,20 @@ pub enum Express {
 impl Express {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Prompt => "prompt",
             Self::Formal => "formal",
             Self::Casual => "casual",
             Self::Verbatim => "verbatim",
         }
     }
 
+    /// Unknown and missing read as prompt, the default voice-flow applies.
     pub fn parse(raw: &str) -> Self {
         match raw.trim() {
+            "formal" => Self::Formal,
             "casual" => Self::Casual,
             "verbatim" => Self::Verbatim,
-            _ => Self::Formal,
+            _ => Self::Prompt,
         }
     }
 }
@@ -156,7 +160,7 @@ pub fn load_express(path: &Path) -> Express {
     load_conf(path)
         .get("VOICE_FLOW_EXPRESS")
         .map(|v| Express::parse(v))
-        .unwrap_or(Express::Formal)
+        .unwrap_or(Express::Prompt)
 }
 
 /// Set one key where it stands; every other line stays. voice-flow sources
@@ -265,7 +269,10 @@ mod tests {
         assert_eq!(Express::parse("shouty"), Express::Prompt);
         assert_eq!(Express::parse("formal"), Express::Formal);
         assert_eq!(Express::Prompt.as_str(), "prompt");
-        assert_eq!(load_express(Path::new("/nonexistent/voice-flow.conf")), Express::Prompt);
+        assert_eq!(
+            load_express(Path::new("/nonexistent/voice-flow.conf")),
+            Express::Prompt
+        );
     }
 
     #[test]
