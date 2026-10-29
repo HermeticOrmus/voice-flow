@@ -64,14 +64,15 @@ fi
 # panel writes VOICE_FLOW_REWRITE=on|off; we translate to the engine's
 # command var here (gating off can't be done by emptying the var in conf —
 # the :- default would just refill it).
-# Express is the tone of the cleanup. verbatim skips the rewrite.
-# formal and casual both rewrite; the style travels in the environment
-# the rewrite script reads. A terminal profile still forces verbatim
-# below, whichever express is selected.
-VOICE_FLOW_EXPRESS="${VOICE_FLOW_EXPRESS:-formal}"
+# Express is the shape of the cleanup. prompt (the default) writes the
+# prompt you meant for a coding agent; formal and casual clean prose in
+# that tone; verbatim skips the rewrite. The style travels in the
+# environment the rewrite script reads. A verbatim app profile still
+# forces verbatim below, whichever express is selected.
+VOICE_FLOW_EXPRESS="${VOICE_FLOW_EXPRESS:-prompt}"
 case "$VOICE_FLOW_EXPRESS" in
-    formal|casual|verbatim) ;;
-    *) VOICE_FLOW_EXPRESS=formal ;;
+    prompt|formal|casual|verbatim) ;;
+    *) VOICE_FLOW_EXPRESS=prompt ;;
 esac
 export VOICE_FLOW_EXPRESS
 if [ "${VOICE_FLOW_REWRITE:-on}" = "off" ] || [ "$VOICE_FLOW_EXPRESS" = "verbatim" ]; then
@@ -254,6 +255,17 @@ EOF
     echo "${resolved:-clean}"
 }
 
+# The word the pill shows while you speak: verbatim when nothing will
+# rewrite (the focused app's profile, Express verbatim, or the switch
+# off), otherwise the Express style that will shape the words.
+forecast() {
+    if [ "$(app_profile)" = "verbatim" ] || [ -z "${VOICE_PASTE_REWRITE_COMMAND:-}" ]; then
+        printf 'verbatim'
+    else
+        printf '%s' "$VOICE_FLOW_EXPRESS"
+    fi
+}
+
 # Agent mode: `voice-flow agent` dictates a COMMAND for the LLM instead
 # of text to transcribe — the model's ANSWER is what gets injected.
 # OpenWhispr calls this the voice-agent hotkey; no wake word needed.
@@ -271,10 +283,10 @@ if [ "$PHASE" = "start" ]; then
         pill_set listening-agent
     else
         rm -f "$AGENT_MARKER"
-        # The forecast: what the focused window will do to the words. The
-        # stop press decides again (focus can move); this is what the pill
-        # shows while you speak.
-        if [ "$PILL_ON" = "1" ]; then pill_set "listening:$(app_profile)"; else pill_set listening; fi
+        # The forecast: what will happen to the words. The stop press
+        # decides again (focus can move); this is what the pill shows
+        # while you speak.
+        if [ "$PILL_ON" = "1" ]; then pill_set "listening:$(forecast)"; else pill_set listening; fi
     fi
     pill_launch
     VOICE_PASTE_PHASE=start whisper-paste >/dev/null 2>&1 || true

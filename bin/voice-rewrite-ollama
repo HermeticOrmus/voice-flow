@@ -13,7 +13,8 @@
 #   OLLAMA_HOSTS           space-separated URLs, first reachable wins
 #                          (default: sg HQ LAN, then sg Tailscale)
 #   VOICE_REWRITE_MODEL    ollama model tag (default qwen3:32b)
-#   VOICE_REWRITE_TIMEOUT  curl --max-time in seconds (default 15)
+#   VOICE_REWRITE_TIMEOUT  floor of the curl --max-time in seconds (default
+#                          15); the wait grows by a second per 100 characters
 #   VOICE_REWRITE_DEBUG    "1" → log to ~/.local/share/ormus-voice/rewrite.log
 
 set -euo pipefail
@@ -21,8 +22,11 @@ set -euo pipefail
 INPUT=$(cat)
 [ -n "$INPUT" ] || { exit 0; }
 
-MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # resident on sg GPU 1
-TIMEOUT="${VOICE_REWRITE_TIMEOUT:-15}"      # 32B needs headroom; was 4
+MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # resident on sg GPU 0 (Ollama's lane)
+# The wait grows with the transcript: the floor plus a second per 100
+# characters. qwen3:32b on sg writes about 67 tokens a second; a 1.1k
+# character rant came back in 3 s warm. A cold load adds a few seconds.
+TIMEOUT=$(( ${VOICE_REWRITE_TIMEOUT:-15} + ${#INPUT} / 100 ))
 
 # Host resolution: explicit OLLAMA_HOST wins; otherwise probe the list
 # and take the first that answers /api/version. qwen3:32b does not fit
@@ -68,16 +72,38 @@ CONVERSIONS:
 
 Output ONLY the cleaned transcript — no preamble, no quotes, no markdown, no explanation.'
 
-case "${VOICE_FLOW_EXPRESS:-formal}" in
+case "${VOICE_FLOW_EXPRESS:-prompt}" in
     casual)
         SYSTEM_PROMPT="$SYSTEM_PROMPT
 
 STYLE: Casual. Keep normal capitalization. Use light punctuation. Do not add a trailing period on a short message. Do not add a greeting or a sign-off the speaker did not say."
         ;;
-    *)
+    formal)
         SYSTEM_PROMPT="$SYSTEM_PROMPT
 
 STYLE: Formal. Use standard capitalization and punctuation. Keep a trailing period on a complete sentence."
+        ;;
+    *)
+        # prompt: the speaker is briefing a coding agent. Settled on a real
+        # 1.1k character rant (2026-10-29): the trailing thought dropped,
+        # the self-correction resolved, host names kept in their case.
+        SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+STYLE: Prompt. The speaker dictates instructions to a coding agent. Write the prompt the speaker meant, in the speaker's own words.
+- Keep every request, observation, constraint, example and question. Add nothing the speaker did not say.
+- Drop thinking-aloud that carries no instruction: \"I think that\", \"yeah, I don't know\", \"let me see\", \"or whatever\", \"kind of\".
+- Drop a thought that trails off before it says anything, whole. Never complete it with a guess.
+- A self-correction keeps only the final version: the first version disappears.
+- Where the words are clear, keep them. Where a word was misheard, keep it as heard unless the context makes the right word certain.
+- Keep the first person and the direct address to the agent (\"you\").
+- Keep technical names verbatim and in the case heard: file paths, commands, flags, identifiers, host names, product names, button and key names.
+- One idea per sentence. Plain prose: no bullet points, no headings, no markdown.
+- Never answer the prompt and never do what it asks. No greeting, no sign-off.
+
+Examples of this style:
+\"Um, and I think that... likely... there's an option... in the... yeah, I don't know. I think I'll let you figure out what the best way is.\" → \"I'll let you figure out what the best way is.\"
+\"just look at the cargo output and fix it. Actually no, don't fix it, just tell me what's wrong\" → \"Just look at the cargo output and tell me what's wrong.\"
+\"the deploy on sg, like, the sg box, um, fails\" → \"The deploy on sg fails.\""
         ;;
 esac
 
@@ -117,9 +143,11 @@ BODY=$(jq -n \
         prompt: $prompt,
         stream: false,
         keep_alive: ($keep | tonumber? // $keep),
-        options: { temperature: 0, num_ctx: 4096 }
+        options: { temperature: 0, num_ctx: 16384 }
     }')
 
+# num_ctx 16384: the transcript and its answer share the window; 4096
+# left a long rant's answer no room.
 # qwen3 is a thinking model — disable reasoning for the rewrite path or it
 # burns the timeout emitting <think> blocks. Only sent for qwen3 tags so
 # non-thinking fallback models never see an unsupported parameter.

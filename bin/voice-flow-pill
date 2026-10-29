@@ -20,8 +20,8 @@
 #   Agent-mode variants: listening-agent | thinking-agent (silver, not
 #   gold — you always know which mode is recording).
 #   Payloads after a colon:
-#     listening:<forecast>      verbatim or clean — what the focused window
-#                               will do to the words; drawn as a small mark
+#     listening:<forecast>      verbatim, prompt, formal or casual — what
+#                               will happen to the words; drawn as a small mark
 #     done:<preview>            a one-line preview of what landed
 #     copied:<key> <preview>    the paste key for that window, then the preview
 #     cancel:<reason>           silent | junk <logprob> | empty | hallucination
@@ -173,7 +173,7 @@ class Pill(Gtk.Application):
         super().__init__(application_id="solutions.ormus.VoiceFlowPill")
         self.state = "listening"
         self.payload = ""         # transcript preview for done/copied
-        self.forecast = ""        # verbatim | clean, while listening
+        self.forecast = ""        # verbatim | prompt | formal | casual, while listening
         self.copied_key = "Ctrl+V"
         self.partial = ""         # live partial transcript while listening
         self.listen_start = time.monotonic()
@@ -420,7 +420,7 @@ class Pill(Gtk.Application):
             self._rounded(cr, x, mid - bh / 2, bar_w, bh, bar_w / 2)
             cr.fill()
 
-        # The forecast mark: verbatim or clean, small, top-right, in ink.
+        # The forecast mark: verbatim or the Express style, small, top-right, in ink.
         if self.state in LISTEN_STATES and self.forecast:
             cr.select_font_face("sans-serif", 0, 0)
             cr.set_font_size(9)
