@@ -33,18 +33,18 @@ class Inject(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_terminal_pastes_with_ctrl_shift_v_and_no_rewrite(self):
+    def test_terminal_pastes_with_ctrl_shift_v_and_rewrites(self):
         self.env["STUB_CLASS"] = "foot"
         r = dictate(self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(CTRL_SHIFT_V, log_lines(self.env, "ydotool"))
-        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "")
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
 
-    def test_workboard_window_is_a_terminal(self):
+    def test_workboard_window_is_a_terminal_and_rewrites(self):
         self.env["STUB_CLASS"] = "org.ormus.workboard.ormus"
         dictate(self.env)
         self.assertIn(CTRL_SHIFT_V, log_lines(self.env, "ydotool"))
-        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "")
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
 
     def test_browser_pastes_with_ctrl_v_and_rewrites(self):
         self.env["STUB_CLASS"] = "firefox"
@@ -104,8 +104,9 @@ class Express(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
 
-    def test_terminal_stays_verbatim_whatever_the_express(self):
+    def test_a_listed_app_stays_verbatim_whatever_the_express(self):
         self.conf.write_text("VOICE_FLOW_EXPRESS=formal\n")
+        (self.conf.parent / "app-profiles.conf").write_text("foot  verbatim\n")
         self.env["STUB_CLASS"] = "foot"
         dictate(self.env)
         self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "")
@@ -159,7 +160,13 @@ class Forecast(unittest.TestCase):
         r = subprocess.run([str(BIN / "voice-flow")], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_a_terminal_forecasts_verbatim(self):
+    def test_a_terminal_forecasts_the_prompt_style(self):
+        self.env["STUB_CLASS"] = "foot"
+        self.start()
+        self.assertEqual(self.pill_state.read_text(), "listening:prompt")
+
+    def test_a_listed_app_forecasts_verbatim(self):
+        (self.conf.parent / "app-profiles.conf").write_text("foot  verbatim\n")
         self.env["STUB_CLASS"] = "foot"
         self.start()
         self.assertEqual(self.pill_state.read_text(), "listening:verbatim")
