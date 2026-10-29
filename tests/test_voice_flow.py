@@ -98,7 +98,7 @@ class Express(unittest.TestCase):
         dictate(self.env)
         self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
 
-    def test_unknown_value_reads_as_formal(self):
+    def test_unknown_value_reads_as_prompt_and_rewrites(self):
         self.conf.write_text("VOICE_FLOW_EXPRESS=shouty\n")
         r = dictate(self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -141,7 +141,7 @@ class FocusGuard(unittest.TestCase):
 
 
 class Forecast(unittest.TestCase):
-    """The pill says what will happen to the words: verbatim or clean on start, the paste key on a divert."""
+    """The pill says what will happen to the words: verbatim or the Express style on start, the paste key on a divert."""
 
     def setUp(self):
         self.tmp = tmpdir()
@@ -149,6 +149,7 @@ class Forecast(unittest.TestCase):
         conf = self.tmp / "config" / "ormus-voice"
         conf.mkdir(parents=True)
         shutil.copy(REPO / "config" / "app-profiles.conf", conf / "app-profiles.conf")
+        self.conf = conf / "voice-flow.conf"
         self.pill_state = self.tmp / "run" / "ormus-voice" / "pill.state"
 
     def tearDown(self):
@@ -163,10 +164,28 @@ class Forecast(unittest.TestCase):
         self.start()
         self.assertEqual(self.pill_state.read_text(), "listening:verbatim")
 
-    def test_a_browser_forecasts_clean(self):
+    def test_a_browser_forecasts_the_prompt_style(self):
         self.env["STUB_CLASS"] = "firefox"
         self.start()
-        self.assertEqual(self.pill_state.read_text(), "listening:clean")
+        self.assertEqual(self.pill_state.read_text(), "listening:prompt")
+
+    def test_a_chosen_express_is_the_forecast(self):
+        self.env["STUB_CLASS"] = "firefox"
+        self.conf.write_text("VOICE_FLOW_EXPRESS=formal\n")
+        self.start()
+        self.assertEqual(self.pill_state.read_text(), "listening:formal")
+
+    def test_express_verbatim_forecasts_verbatim(self):
+        self.env["STUB_CLASS"] = "firefox"
+        self.conf.write_text("VOICE_FLOW_EXPRESS=verbatim\n")
+        self.start()
+        self.assertEqual(self.pill_state.read_text(), "listening:verbatim")
+
+    def test_rewrite_off_forecasts_verbatim(self):
+        self.env["STUB_CLASS"] = "firefox"
+        self.conf.write_text("VOICE_FLOW_REWRITE=off\n")
+        self.start()
+        self.assertEqual(self.pill_state.read_text(), "listening:verbatim")
 
     def test_a_divert_in_a_terminal_names_ctrl_shift_v(self):
         # hyprctl calls with the pill on: 1 forecast, 2 profile, 3 focus before, 4 focus after.

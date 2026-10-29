@@ -157,11 +157,27 @@ class Style(unittest.TestCase):
     def test_casual_style_line(self):
         self.assertIn("STYLE: Casual.", self.prompt_sent("casual"))
 
-    def test_formal_is_the_default_style(self):
-        self.assertIn("STYLE: Formal.", self.prompt_sent(None))
+    def test_formal_style_line(self):
+        self.assertIn("STYLE: Formal.", self.prompt_sent("formal"))
 
-    def test_unknown_value_reads_as_formal(self):
-        self.assertIn("STYLE: Formal.", self.prompt_sent("shouty"))
+    def test_prompt_is_the_default_style(self):
+        self.assertIn("STYLE: Prompt.", self.prompt_sent(None))
+
+    def test_unknown_value_reads_as_prompt(self):
+        self.assertIn("STYLE: Prompt.", self.prompt_sent("shouty"))
+
+    def test_the_prompt_style_keeps_names_and_drops_the_trailing_thought(self):
+        sent = self.prompt_sent("prompt")
+        self.assertIn("Keep technical names verbatim", sent)
+        self.assertIn("trails off", sent)
+        self.assertIn("Never answer the prompt", sent)
+
+    def test_a_long_rant_gets_a_longer_wait_and_a_wider_context(self):
+        subprocess.run([str(BIN / "voice-rewrite-ollama")], input="word " * 600,  # 3000 chars
+                       env=self.env, capture_output=True, text=True)
+        sent = "\n".join(log_lines(self.env, "curl"))  # the body spans lines
+        self.assertIn(" -m 45 ", sent)  # 15 s floor + 3000 chars / 100
+        self.assertIn('"num_ctx": 16384', sent)
 
 
 JUNK = ('{"text":"Vasime glaha, haiu, ro只是信 Мария gault, více, 보라, Tapia, köde, Glence. Thank you.",'
