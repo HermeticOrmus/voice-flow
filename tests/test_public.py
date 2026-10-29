@@ -1,6 +1,6 @@
 """The tree is public: it names no private host, client or person.
 
-Every tracked file but README.md, the audio, the lock files and this test is read as text. A
+Every tracked file but the audio, the lock files and this test is read as text. A
 private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10) or one of WORDS (whole word, any
 case) fails the test with file:line. "Sun" is too common a word to ban here; check it by hand.
 Example addresses come from the documentation ranges (192.0.2.x, 198.51.100.x).
@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SKIP = {"README.md", "tests/test_public.py"}
+SKIP = {"tests/test_public.py"}
 SKIP_SUFFIXES = (".wav", ".lock")
 WORDS = ("sg", "mars", "moon", "corvin", "corvin-mini", "corvin-server", "tailscale", "tailnet", "raven",
          "alqvimia", "biogenesis", "laura", "voice.ormus.solutions", "ormus-claw")

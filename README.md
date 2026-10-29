@@ -1,219 +1,185 @@
-# voice-flow
+<p align="center">
+  <img src="https://ormus.solutions/mascot/pixellab_liquid_to_swan.gif" alt="voice-flow" width="128" style="image-rendering: pixelated;" />
+</p>
 
-Wispr Flow clone for Linux Wayland (Omarchy/Hyprland on Sun; COSMIC before).
-System-wide voice dictation: hold-free toggle, speak into **any** focused
-app, a resident GPU whisper server, optional local LLM cleanup with a
-chosen tone, a focus-proof feedback pill, and native control windows.
+<h1 align="center">voice-flow</h1>
 
-Install: `./install.sh` links `bin/*` into `~/.local/bin` (the repo is what
-runs), builds the Rust helpers, and prints the key bind. On Sun the bind is
-**Super+H** (`~/.config/hypr/bindings.lua`); Super+V stays universal paste.
+<p align="center">
+  <em>Voice dictation for Linux Wayland — speak into any window, a local whisper does the rest</em>
+</p>
 
-## Components (`~/.local/bin/`)
+<p align="center">
+  <a href="https://github.com/HermeticOrmus/voice-flow/stargazers"><img src="https://img.shields.io/github/stars/HermeticOrmus/voice-flow?style=flat-square&color=aa8142" alt="Stars" /></a>
+  <a href="https://github.com/HermeticOrmus/voice-flow/blob/master/LICENSE"><img src="https://img.shields.io/github/license/HermeticOrmus/voice-flow?style=flat-square&color=aa8142" alt="License" /></a>
+  <a href="https://github.com/HermeticOrmus/voice-flow/commits"><img src="https://img.shields.io/github/last-commit/HermeticOrmus/voice-flow?style=flat-square&color=aa8142" alt="Last Commit" /></a>
+  <img src="https://img.shields.io/badge/Wayland-aa8142?style=flat-square&logo=wayland&logoColor=white" alt="Wayland" />
+  <img src="https://img.shields.io/badge/whisper.cpp-aa8142?style=flat-square" alt="whisper.cpp" />
+</p>
 
-| Binary | What it is |
-|--------|-----------|
-| `voice-flow` | Orchestrator. Toggle record → transcribe (via `whisper-paste`) → inject with ydotool (raw keycodes; terminals and `org.ormus.workboard.*` windows get Ctrl+Shift+V). Bound to **Super+H**. `voice-flow agent` treats the dictation as a command — the LLM's answer is what gets injected (no key on Hyprland yet). |
-| `whisper-paste` | The engine: arecord (48 kHz) → silence gate → mic tuning (`vibecoding-record`) → whisper (remote-first, see below) → hallucination filter → optional LLM rewrite. |
-| `vibecoding-record` | Mic tuning stage: high-pass, noise reduction, compression, presence EQ → clean 16 kHz mono WAV for whisper.cpp. If absent, `whisper-paste` skips tuning and uses the raw capture. |
-| `voice-flow-pill` | GTK4 layer-shell waveform pill (focus-proof feedback). |
-| `voice-flow-panel` | Rust GTK4 window, the one control surface: live state, today's numbers, the engine, Express (prompt, formal, casual, verbatim), inject method and switches, Dictate and Agent, dictionary, substitutions, last paste. Writes each conf key in place. Launcher "Voice Flow". |
-| `voice-flow-web` | Rich analytics dashboard: charts, streaks, time-saved, training data management (vocabulary + substitutions CRUD), engine status, settings, opt-in transcript history. Stdlib server, localhost only, zero external requests. Runs on Sun (`http://127.0.0.1:7385`, the panel's Analytics button) AND on Mars (corvin-mini), where it backs the portal. |
+---
 
-## The portal — voice.ormus.solutions
+> Press a key, speak, press it again: the words land in the window you were in.
 
-Served **from Mars** (corvin-mini, always-on at HQ) behind a Cloudflare
-Tunnel (`voice-portal`) + CF Access (Ormus emails only, 30-day
-sessions). The voice data lives on Sun and syncs to Mars via Syncthing
-(folders `voice-data` = `~/.local/share/ormus-voice` minus `models/`,
-`voice-conf` = `~/.config/ormus-voice`) — two-way, so vocabulary and
-settings edited in the portal flow back to Sun where dictation reads
-them. Mini-side units: user systemd `voice-flow-web.service` +
-`voice-portal-tunnel.service` (aiadmin, linger on). Sun keeps its own
-local `voice-flow-web.service` for the GTK Analytics button; Sun's
-tunnel unit is disabled. `backend.state` lives in the data dir (not
-runtime) precisely so the portal's engine card syncs.
-| `ormus-active-window` | Rust helper — prints the COSMIC focused window via `cosmic-toplevel-info-v1`. On Hyprland it cannot connect; per-app profiles read `hyprctl activewindow` instead and the focus interlock fails open. |
-| `voice-rewrite-ollama` / `voice-rewrite-claude` | Optional Wispr-style AI cleanup commands. |
-| `voice-agent-ollama` | Agent mode: the transcript is an instruction, stdout is the answer. `VOICE_AGENT_MODEL` picks the model (default llama3.2:3b on mini; try `ornith-9b` for harder asks). |
+voice-flow is system-wide dictation for Linux on Wayland (Hyprland/Omarchy, COSMIC). Your voice goes to a whisper server or to `whisper-cli` on your own machine, never to a cloud service. An optional local LLM (Ollama) cleans up what you said: it keeps every request and technical name, drops the thinking aloud, and never answers or obeys what you dictate.
 
-## voice-ideas: the listener for idle thoughts
+## What you get
 
-Ormus, while he games: "I can just speak into the mic, I can turn some process on, and that hears
-everything that I'm saying ... talking a little bit, and then stopping, and then starting."
+- **Dictation into any window.** Short text is typed, long text is pasted. Terminals get the terminal paste key.
+- **A pill on screen** that shows the level of your voice, the words as they arrive (live partials), and what landed.
+- **A focus guard.** If you switch windows while it transcribes, the text goes to the clipboard instead of the wrong window.
+- **Express styles.** `prompt` (the default: the prompt you meant for a coding agent), `formal`, `casual`, `verbatim`.
+- **Training on your words.** A vocabulary that whisper hears better, learned substitutions, and corrections that teach the cleanup.
+- **A control panel** (GTK4, Rust) and a local analytics page.
+- **voice-ideas** (optional): a listener for idle thoughts while you game or walk around. It cuts speech at pauses and logs one line per thing you said.
 
-`voice-ideas` listens on the default source, cuts speech at a 1.5 s pause (silero VAD, ONNX on
-onnxruntime, one thread), sends each utterance to whisper-server, and appends one JSON line per
-utterance to `~/.local/share/ormus-voice/ideas/utterances.jsonl`. It never writes into a window
-(that is `voice-flow`), it keeps no audio (a clip lives in memory until whisper answers, or in
-`ideas/spool/` while no server answers), and it drops whatever is spoken while a Super+H dictation
-records. The user unit `voice-ideas.service` is installed by `install.sh` and never enabled: start
-it with `systemctl --user start voice-ideas` (or from the Sun board), stop it the same way.
+## Quick start
 
-| Conf key (env, then `voice-flow.conf`) | Default | Meaning |
+### Requirements
+
+| Need | Why | Arch / Omarchy package |
 |---|---|---|
-| `VOICE_IDEAS_SOURCE` | the default source | PipeWire source name (`pactl list sources short`) |
-| `VOICE_IDEAS_HOSTS` | Sun :8093, then sg | whisper-server hosts, first that answers wins |
-| `VOICE_IDEAS_PAUSE_MS` | 1500 | the pause that ends an utterance |
+| `arecord` | records the microphone | `alsa-utils` |
+| `whisper-cli` and a model | local transcription | `whisper.cpp` (AUR) |
+| `ydotool` with `ydotoold` running | types and pastes into the window | `ydotool` |
+| `wl-clipboard`, `notify-send`, `jq` | clipboard, notes, history | `wl-clipboard`, `libnotify`, `jq` |
+| Python 3 with GTK4 and layer-shell | the pill | `python-gobject`, `gtk4-layer-shell` |
+| Rust (optional) | the panel | `rust` |
+| Ollama (optional) | the cleanup and agent mode | `ollama` |
+| `ffmpeg` (optional) | mic tuning before whisper | `ffmpeg` |
+| `uv` (optional) | voice-ideas and the tests | `uv` |
 
-When 20 s pass after the last utterance, the listener runs `voice-ideas-sort`: the burst (utterances
-under 20 s apart) goes to a model that splits it into separate ideas, cleans the words without a
-paraphrase, and picks for each the one agent it belongs to from the rows the Sun board shows (Sun's
-herdr and sg's workboards), or none. One line per note in `ideas/notes.jsonl` (`id`, `burst`,
-`utterances`, `text`, `target` or null, `why`). No model, no board, bad JSON: the burst still lands
-as one raw note. `voice-ideas-sort --dry` prints the exchange and writes nothing.
-
-| Conf key | Default | Meaning |
-|---|---|---|
-| `VOICE_IDEAS_SORTER` | `ollama` | `ollama` (sg, JSON mode, no thinking) or `claude` |
-| `VOICE_IDEAS_MODEL` | `qwen3.6:35b-a3b-q4_K_M` | the Ollama model (resident on sg) |
-| `OLLAMA_HOSTS` | sg on the HQ LAN, then Tailscale | base URLs, first that answers wins |
-| `VOICE_IDEAS_CLAUDE_MODEL` | `claude-haiku-4-5` | with `ANTHROPIC_API_KEY`, `ANTHROPIC_API_KEY_FILE` or `~/.credentials/anthropic/ormus` |
-
-`voice-ideas --replay f.raw` runs the same loop over a raw s16le 16 kHz mono file; `--drain`
-transcribes the spool. The mechanism was settled by the spike in `docs/spikes/vad-game-capture.md`
-(branch `spike/vad-game-capture`): silero cut 0 game segments in 310 s of a loud room and 12 of 12
-of his utterances on the DJI; the thread pools must be pinned or they spin a whole core; whisper's
-`avg_logprob` under -1.5 marks junk. `./check.sh` runs the tests (uv supplies the packages).
-
-## Express
-
-`VOICE_FLOW_EXPRESS` is the shape of the cleanup. `prompt`, the default,
-writes the prompt you meant for a coding agent: every request, observation
-and question stays; thinking-aloud and a thought that trails off go; a
-self-correction keeps its final version; technical names stay verbatim and
-in the case heard; one idea per sentence, plain prose. `formal` and
-`casual` clean prose in that tone. `verbatim` skips the rewrite. The pill
-shows the word that will apply while you speak. The wait for the model is
-15 s plus a second per 100 characters, and the context window holds a long
-rant (16k tokens).
-
-## Per-app profiles
-
-`~/.config/ormus-voice/app-profiles.conf` maps focused `app_id` globs to
-a profile: `verbatim` (raw transcript, no LLM) or `clean` (the Express
-clean-up). Unlisted apps get `clean`, terminals included: the prompt
-style keeps paths, flags and identifiers verbatim, and Express
-`verbatim` turns the clean-up off for a take. The file ships with no
-rules. Find ids with `hyprctl activewindow -j | jq -r .class`.
-
-## Rewrite hardening
-
-The cleanup prompt treats the speaker as never talking to the model:
-dictated questions get written down, not answered; dictated
-instructions get transcribed, not executed. Self-corrections ("wait
-no, scratch that") collapse to the corrected version; spoken
-punctuation/numbers/dates convert to written forms. The script also
-strips echoed transcript tags, aborts over-editing (output length far
-from input length → raw paste), and feeds the last few `voice-correct`
-journal entries as few-shot examples so recurring mishearings fix
-themselves.
-
-## Training the stack on your terms
-
-Three layers, compounding:
-
-1. **Vocabulary biasing** (`~/.config/ormus-voice/vocabulary.txt`) —
-   terms are fed to whisper as its decode prompt, so it *hears* them
-   more readily. First line of defense.
-2. **Learned substitutions** (`~/.config/ormus-voice/substitutions.tsv`)
-   — deterministic heard→canonical fixes applied by `voice-substitute`
-   after transcription, before any LLM. Works in every mode, including
-   verbatim/terminal where the rewrite is skipped.
-3. **Rewrite few-shot** — the corrections journal's latest pairs ride
-   into the cleanup prompt as examples.
-
-`voice-train` builds layers 1+2 from your actual voice: for each term
-it records you saying it, transcribes RAW (no biasing — captures the
-true mishearing), and learns the pair when whisper gets it wrong.
+### Install
 
 ```bash
-voice-train Embry0 Alqvimia McLeod   # enroll specific terms
-voice-train                          # re-run everything in vocabulary.txt
-voice-train status                   # what's learned
-voice-train distill                  # corrections journal → rules
+git clone https://github.com/HermeticOrmus/voice-flow.git
+cd voice-flow
+./install.sh        # links bin/* into ~/.local/bin, builds the panel when cargo is there
 ```
 
-Day-to-day: when a paste comes out wrong, `voice-correct "what I
-meant"` logs the pair; `voice-train distill` turns the journal into
-rules.
+The repo is what runs: `install.sh` links the scripts, so `git pull` updates them.
 
-## Live partials (streaming)
+Get a whisper model (the default is `medium.en`; `base.en` is smaller and faster):
 
-While you speak, the pill re-transcribes its own mic tap every ~1.2 s
-against the same whisper server as the final pass and shows the words
-landing in real time. Feedback only — the injected text still comes from
-the stop-time pass. Sliding 6 s window (the pill shows the tail), non-speech annotations stripped,
-disabled automatically when no host answers. Toggle: `VOICE_FLOW_PARTIALS`
-(conf or web settings).
-
-## Pill states
-
-Gold = dictation, silver = agent mode. While listening the bars follow the
-mic and turn copper in the last 15 s before the 120 s cap; after injection
-the pill shows a one-line preview of exactly what landed; on a focus divert
-it shows the text plus "copied — Ctrl+V".
-
-## Focus interlock (the window-switch fix)
-
-`ydotool` injects into whatever window has focus at inject time. If you switch
-windows during the ~1–3s transcription, text would land in the wrong window.
-`voice-flow` captures the focused window before transcription and re-checks
-after; if focus moved, it **diverts the transcript to the clipboard** and
-notifies you to paste, instead of typing into the wrong window. Degrades
-safely: when no focus reader answers, it behaves as before (always inject).
-Today the reader is `ormus-active-window --list` (COSMIC); on Hyprland it
-cannot connect, so the guard is off there until it reads `hyprctl`.
-
-## Engine (remote-first inference)
-
-Speech goes to a resident whisper server, never to a cold `whisper-cli`
-and never to Sun's iGPU (it drives the displays; inference there hangs the
-desktop). Order, first that answers wins:
-
-- `127.0.0.1:8093` — Sun, faster-whisper large-v3-turbo on the RTX 5070 Ti
-  (`~/tools/whisper-server`, user unit `whisper-server.service`).
-- `10.10.90.145:8093` (HQ LAN), then `100.66.108.108:8093` (Tailscale) — sg.
-- `whisper-cli` on the CPU as the last resort (`VOICE_PASTE_GPU=0`).
-
-Rewrite and agent mode probe sg's Ollama on `:11434` in that same order;
-the rewrite model is `qwen3:32b` (think off, resident, 15 s timeout).
-Raw passthrough when no host answers. Override with `VOICE_PASTE_REMOTE=off`,
-`VOICE_PASTE_REMOTE_HOSTS`, `OLLAMA_HOSTS`, `VOICE_REWRITE_MODEL`.
-
-`VOICE_PASTE_MODEL` in the conf governs the **local fallback** only.
-
-## Config
-
-`~/.config/ormus-voice/voice-flow.conf` (shell `KEY=value`, sourced each run;
-written key by key by the panel and the web settings): `VOICE_FLOW_METHOD`,
-`VOICE_PASTE_MODEL` (local fallback), `VOICE_FLOW_REWRITE`, `VOICE_FLOW_EXPRESS`
-(prompt, formal, casual, verbatim), `VOICE_FLOW_PILL`, `VOICE_FLOW_PARTIALS`,
-`VOICE_FLOW_LOG_TEXT` (1 keeps transcript text in the history log).
-
-## History / stats
-
-`~/.local/share/ormus-voice/history.jsonl` — one privacy-respecting line per
-dictation (counts only, never transcript text): `ts, words, chars, model,
-method, rewrite, transcribe_ms, diverted`. The panel reads it for "today".
-
-## Install
-
-```sh
-./install.sh            # links bin/* into ~/.local/bin, builds panel + active-window
+```bash
+mkdir -p ~/.local/share/ormus-voice/models
+curl -L -o ~/.local/share/ormus-voice/models/ggml-medium.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin
 ```
 
-Omarchy/Hyprland: in `~/.config/hypr/bindings.lua`
+Bind a key to `voice-flow`. Hyprland with a Lua config (Omarchy), in `~/.config/hypr/bindings.lua`:
 
 ```lua
 o.bind("SUPER + H", "Toggle dictation", "voice-flow", { dont_inhibit = true, allow_input_capture = true })
 ```
 
-COSMIC: bind the key to `voice-flow` in Settings → Keyboard → Custom Shortcuts.
+COSMIC: Settings, Keyboard, Custom Shortcuts, command `voice-flow`.
+
+Press the key, speak, press it again.
+
+### Faster: a resident whisper server
+
+`whisper-cli` loads the model on every take. A resident server answers in about a second. whisper.cpp's own server speaks the same API voice-flow uses:
+
+```bash
+whisper-server -m ~/.local/share/ormus-voice/models/ggml-medium.en.bin --host 127.0.0.1 --port 8093
+```
+
+voice-flow tries `127.0.0.1:8093` first and falls back to `whisper-cli` when nothing answers. Run the server on a GPU machine on your LAN and name it in the config (below). Keep whisper off an integrated GPU that drives your displays: inference there can hang the desktop.
+
+## Config
+
+`~/.config/ormus-voice/voice-flow.conf`: shell `KEY=value` lines, read on every take. The panel and the analytics page write the keys they own and keep every other line. A variable set in the environment wins.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `VOICE_PASTE_REMOTE_HOSTS` | `127.0.0.1:8093` | whisper servers, in order, first that answers wins |
+| `VOICE_HOST_NAMES` | none | names to show for them: `"192.0.2.7:8093=GPU box;127.0.0.1:8093=laptop"` |
+| `OLLAMA_HOSTS` | `http://127.0.0.1:11434` | Ollama servers for the cleanup, agent mode and voice-ideas |
+| `VOICE_PASTE_MODEL` | `medium.en` | the model `whisper-cli` uses when no server answers |
+| `VOICE_FLOW_METHOD` | `auto` | `auto`, `type` or `paste` |
+| `VOICE_FLOW_EXPRESS` | `prompt` | `prompt`, `formal`, `casual`, `verbatim` |
+| `VOICE_FLOW_REWRITE` | `on` | the LLM cleanup on or off |
+| `VOICE_REWRITE_MODEL` | `qwen3:32b` | the cleanup model on Ollama |
+| `VOICE_FLOW_PILL` | `1` | the pill on screen |
+| `VOICE_FLOW_PARTIALS` | `1` | live words in the pill |
+| `VOICE_FLOW_LOG_TEXT` | `0` | `1` keeps transcript text in the local history |
+
+Example for a GPU server on your LAN:
+
+```bash
+VOICE_PASTE_REMOTE_HOSTS="127.0.0.1:8093 192.0.2.7:8093"
+OLLAMA_HOSTS="http://192.0.2.7:11434"
+VOICE_HOST_NAMES="192.0.2.7:8093=GPU box"
+```
+
+### Per-app profiles
+
+`~/.config/ormus-voice/app-profiles.conf` maps window classes to `verbatim` (raw transcript, no LLM) or `clean`. Unlisted apps get `clean`. Find a class with `hyprctl activewindow -j | jq -r .class`.
+
+## Components
+
+| Command | What it does |
+|---|---|
+| `voice-flow` | The key's command: start, then stop, transcribe and insert. `voice-flow agent` treats the dictation as a question and inserts the answer. |
+| `whisper-paste` | The engine: record, silence gate, mic tuning, whisper (server first, then `whisper-cli`), hallucination filter, optional cleanup. |
+| `vibecoding-record` | Mic tuning: high-pass, noise reduction, compression. Skipped when absent. |
+| `voice-flow-pill` | The on-screen pill (GTK4 layer shell). |
+| `voice-flow-panel` | The control window: state, today's numbers, Express, switches, dictionary, last paste. |
+| `voice-flow-web` | A local analytics page on `127.0.0.1:7385`. Stdlib only, no outside requests. |
+| `voice-train`, `voice-substitute` | Train whisper on your words; apply learned fixes. |
+| `voice-rewrite-ollama`, `voice-rewrite-claude`, `voice-agent-ollama` | The cleanup and agent backends. |
+| `voice-ideas`, `voice-ideas-sort` | The idle-thought listener and its sorter (below). |
+
+## Training it on your words
+
+1. **Vocabulary** (`~/.config/ormus-voice/vocabulary.txt`): terms whisper is told to expect, so it hears them.
+2. **Substitutions** (`~/.config/ormus-voice/substitutions.tsv`): heard to meant, applied before any LLM, in every mode.
+3. **Corrections**: the journal `~/.local/share/ormus-voice/corrections.jsonl` (written by `voice-train`) feeds its latest pairs to the cleanup as examples.
+
+```bash
+voice-train PyTorch Hyprland kubectl   # say each term; learn what whisper gets wrong
+voice-train status
+voice-train distill                    # corrections journal to rules
+```
+
+## voice-ideas
+
+`voice-ideas` listens on the default microphone, cuts speech at a 1.5 s pause (silero VAD), sends each utterance to your whisper server and appends one JSON line to `~/.local/share/ormus-voice/ideas/utterances.jsonl`. It never types into a window, keeps no audio, and drops what you say while a dictation records. `install.sh` installs the user unit and does not enable it:
+
+```bash
+systemctl --user start voice-ideas    # listen
+systemctl --user stop voice-ideas
+```
+
+After a pause, `voice-ideas-sort` splits a burst into separate notes with an Ollama model (or Claude with `VOICE_IDEAS_SORTER=claude` and an API key). Its targets come from a local agent board; without one, every note still lands, with no target.
+
+## Privacy
+
+- Audio never leaves the machines you name in the config.
+- The history (`~/.local/share/ormus-voice/history.jsonl`) holds counts only: words, characters, timing, method. Transcript text is kept only when you set `VOICE_FLOW_LOG_TEXT=1`.
+- The analytics page listens on localhost and makes no outside requests.
+
+## Compatibility
+
+- Hyprland (Omarchy) and COSMIC on Wayland; other wlroots compositors should work with `ydotool`.
+- The focus guard reads the focused window on COSMIC today; on Hyprland it is off until it reads `hyprctl`.
+- Used daily on Arch (Omarchy, Hyprland); earlier on Pop!_OS (COSMIC).
 
 ## Tests
 
-```sh
-python3 -m unittest discover -s tests -v   # stubbed compositor, injector, clipboard, engine
-cd panel && cargo test --release           # the panel's store
+```bash
+./check.sh                                           # Python tests (uv supplies the packages)
+(cd panel && cargo test --release && cargo clippy --release)
 ```
+
+## Feedback
+
+Tell us what worked and what got in your way: [open a feedback issue](https://github.com/HermeticOrmus/voice-flow/issues/new?template=feedback.yml). Questions and setups are welcome in [Discussions](https://github.com/HermeticOrmus/voice-flow/discussions).
+
+## Contributing
+
+Small pull requests, one change each, with a test that fails before the change. Run `./check.sh` first. Commits follow `type(scope): description`.
+
+## License
+
+MIT © 2026 [Diego Bodart](https://github.com/HermeticOrmus) — see [LICENSE](LICENSE). Built under the [Gold Hat principle](GOLD_HAT.md).
