@@ -91,9 +91,11 @@ rant (16k tokens).
 ## Per-app profiles
 
 `~/.config/ormus-voice/app-profiles.conf` maps focused `app_id` globs to
-a profile: `verbatim` (raw transcript, no LLM — terminals, where a
-rewrite mangles paths and flags) or `clean` (full cleanup). Unlisted
-apps get `clean`. Find ids with `ormus-active-window --list`.
+a profile: `verbatim` (raw transcript, no LLM) or `clean` (the Express
+clean-up). Unlisted apps get `clean`, terminals included: the prompt
+style keeps paths, flags and identifiers verbatim, and Express
+`verbatim` turns the clean-up off for a take. The file ships with no
+rules. Find ids with `hyprctl activewindow -j | jq -r .class`.
 
 ## Rewrite hardening
 

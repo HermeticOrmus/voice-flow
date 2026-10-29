@@ -112,7 +112,7 @@ hypr_active_class() {
 }
 
 # The focused window's class decides the paste chord and its name. A new
-# terminal app-id goes here AND in app-profiles.conf (verbatim).
+# terminal app-id goes here.
 # org.ormus.workboard.<session>: the Sun board's sg workboard windows (foot).
 terminal_class() {  # $1 = window class
     case "$1" in
@@ -216,9 +216,9 @@ history_log() {  # $1=text $2=method $3=diverted(0|1) $4=start-epoch $5=end-epoc
 }
 
 # Per-app rewrite profiles. The focused app decides how the transcript
-# is treated: terminals get the raw transcript verbatim (an LLM pass
-# would mangle paths and flags — whisper's vocabulary biasing still
-# applies), everything else gets the cleanup rewrite. Mapping lives in
+# is treated: an app listed verbatim in app-profiles.conf gets the raw
+# transcript (whisper's vocabulary biasing still applies); every other
+# app, terminals included, gets the Express clean-up. Mapping lives in
 # app-profiles.conf: "<app_id-glob> <verbatim|clean>" per line.
 # COSMIC marks one window activated PER OUTPUT; when the activated set
 # maps to conflicting profiles, fall back to "clean" (rewrite is the
@@ -303,7 +303,7 @@ if [ -f "$AGENT_MARKER" ]; then
     export VOICE_PASTE_REWRITE_COMMAND="${VOICE_FLOW_AGENT_COMMAND:-voice-agent-ollama}"
     pill_set thinking-agent
 elif [ -n "${VOICE_PASTE_REWRITE_COMMAND:-}" ] && [ "$(app_profile)" = "verbatim" ]; then
-    # Focused app wants the transcript untouched (terminals).
+    # Focused app wants the transcript untouched (listed verbatim).
     export VOICE_PASTE_REWRITE_COMMAND=""
     pill_set thinking
 else
