@@ -210,3 +210,35 @@ class JunkGate(unittest.TestCase):
         self.env["STUB_RMS"] = "0.0010"
         self.stop(SPANISH)
         self.assertIn("silent", (self.tmp / "run" / "ormus-voice" / "last-drop").read_text())
+
+
+class TakeLength(unittest.TestCase):
+    """A long take is kept whole: no two-minute cap on the recorder, and whisper gets time for the length of the take."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.env = make_env(self.tmp, VOICE_PASTE_QUIET="1")
+        models = self.tmp / "data" / "ormus-voice" / "models"
+        models.mkdir(parents=True)
+        (models / "ggml-base.en.bin").write_bytes(b"model")
+        (self.tmp / "run" / "ormus-voice").mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_recorder_runs_an_hour_not_two_minutes(self):
+        self.env["VOICE_PASTE_PHASE"] = "start"
+        subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
+        calls = log_lines(self.env, "arecord")
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn(" -d 3600 ", " " + calls[0] + " ")
+
+    def test_whisper_waits_a_tenth_of_the_take_over_the_floor(self):
+        wav = silent_wav(self.tmp / "take.wav", seconds=300)  # a five-minute rant
+        (self.tmp / "run" / "ormus-voice" / "recording.state").write_text(f"{DEAD_PID}:{wav}")
+        self.env.update(VOICE_PASTE_PHASE="stop", STUB_CURL_OUT="Hello there.")
+        r = subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "Hello there.", r.stderr)
+        calls = [c for c in log_lines(self.env, "curl") if "/inference" in c]
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn(" -m 36 ", " " + calls[0] + " ")  # 6 s floor + 300 s / 10
