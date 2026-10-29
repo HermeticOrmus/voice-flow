@@ -1,7 +1,7 @@
 """voice-ideas-sort: bursts of utterances become notes with a target agent, once each.
 
 A fake LLM stands in for Ollama; the targets are two fake board rows. The live judgment on
-Ormus's real transcripts is tests/eval_sort.sh (needs a live model and the board).
+real transcripts needs a live model and a board; it is not part of these tests.
 """
 from __future__ import annotations
 

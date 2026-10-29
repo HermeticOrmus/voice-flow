@@ -28,7 +28,6 @@ KEPT = {
     # the board's fleet.json key for the machine whose agents the sorter can target
     ("bin/voice-ideas-sort", 'TARGET_MACHINES = ("sg",)   # the fleet docs the board can act on (its FLEET_MACHINES)'),
     # the eval finds one of the author's own dictations in his history by its words
-    ("tests/eval_sort.sh", 'if "nothing is running" in t and "SG sessions" in t: pick["b2"] = r'),
 }
 
 
