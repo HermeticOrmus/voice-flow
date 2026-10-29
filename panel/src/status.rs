@@ -127,12 +127,28 @@ mod tests {
         assert_eq!(state(false, "done:Hello"), "idle");
     }
 
+    fn conf(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn hosts_come_from_the_conf_and_default_to_this_machine() {
+        assert_eq!(hosts(&conf(&[])), vec![("127.0.0.1:8093".to_string(), "this machine".to_string())]);
+        let named = conf(&[
+            ("VOICE_PASTE_REMOTE_HOSTS", "127.0.0.1:8093 192.0.2.7:8093 198.51.100.4:8093"),
+            ("VOICE_HOST_NAMES", "192.0.2.7:8093=the server;127.0.0.1:8093=desk"),
+        ]);
+        let names: Vec<String> = hosts(&named).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(names, ["desk", "the server", "198.51.100.4:8093"]);
+    }
+
     #[test]
     fn backend_names() {
-        assert_eq!(backend_label("remote 127.0.0.1:8093"), "Sun");
-        assert_eq!(backend_label("remote 10.0.0.9:8093"), "10.0.0.9:8093");
-        assert_eq!(backend_label("local base.en"), "local fallback (base.en)");
-        assert_eq!(backend_label(""), "—");
+        let hs = hosts(&conf(&[("VOICE_HOST_NAMES", "127.0.0.1:8093=desk")]));
+        assert_eq!(backend_label("remote 127.0.0.1:8093", &hs), "desk");
+        assert_eq!(backend_label("remote 10.0.0.9:8093", &hs), "10.0.0.9:8093");
+        assert_eq!(backend_label("local base.en", &hs), "local fallback (base.en)");
+        assert_eq!(backend_label("", &hs), "—");
     }
 
     #[test]

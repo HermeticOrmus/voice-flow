@@ -7,6 +7,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import unittest
+from pathlib import Path
 
 from stubs import BIN, DEAD_PID, log_lines, make_env, silent_wav, tmpdir
 
@@ -87,7 +88,8 @@ if __name__ == "__main__":
 
 
 class Hosts(unittest.TestCase):
-    """Speech goes to Sun's :8093 first, then sg; the LLM steps go to sg."""
+    """Speech goes to this machine's :8093 first unless voice-flow.conf names the hosts; the LLM
+    steps go to this machine's Ollama unless it names others."""
 
     def setUp(self):
         self.tmp = tmpdir()
@@ -113,13 +115,13 @@ class Hosts(unittest.TestCase):
         subprocess.run([str(BIN / "voice-train"), "Embry0"], env=self.env, capture_output=True, text=True)
         self.assertIn("http://127.0.0.1:8093/inference", log_lines(self.env, "curl")[0])
 
-    def test_rewrite_runs_qwen_on_sg(self):
+    def test_rewrite_runs_qwen_on_this_machine_by_default(self):
         self.env["STUB_OLLAMA_RESPONSE"] = '{"response":"Hello there."}'
         r = subprocess.run([str(BIN / "voice-rewrite-ollama")], input="um hello there",
                            env=self.env, capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "Hello there.")
         log = "\n".join(log_lines(self.env, "curl"))
-        self.assertTrue(log.startswith("-s --connect-timeout 0.4 -m 1 http://10.10.90.145:11434/api/version"), log[:120])
+        self.assertTrue(log.startswith("-s --connect-timeout 0.4 -m 1 http://127.0.0.1:11434/api/version"), log[:120])
         self.assertIn('"model": "qwen3:32b"', log)
         self.assertIn('"think": false', log)
 
@@ -129,12 +131,36 @@ class Hosts(unittest.TestCase):
                            env=self.env, capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "um hello there")
 
-    def test_agent_asks_sg_first(self):
+    def test_agent_asks_this_machine_by_default(self):
         self.env["STUB_OLLAMA_RESPONSE"] = '{"response":"42"}'
         r = subprocess.run([str(BIN / "voice-agent-ollama")], input="what is six times seven",
                            env=self.env, capture_output=True, text=True)
         self.assertEqual(r.stdout.strip(), "42")
-        self.assertIn("http://10.10.90.145:11434/api/version", log_lines(self.env, "curl")[0])
+        self.assertIn("http://127.0.0.1:11434/api/version", log_lines(self.env, "curl")[0])
+
+    def conf(self, text: str) -> None:
+        d = self.tmp / "config" / "ormus-voice"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "voice-flow.conf").write_text(text)
+
+    def test_the_conf_names_the_hosts(self):
+        """Each tool reads voice-flow.conf itself, run by voice-flow or on its own."""
+        self.conf('VOICE_FLOW_METHOD=auto\nVOICE_PASTE_REMOTE_HOSTS="192.0.2.7:8093 127.0.0.1:8093"\n'
+                  'OLLAMA_HOSTS="http://192.0.2.7:11434"\n')
+        self.env.update(VOICE_PASTE_PHASE="stop", STUB_CURL_OUT="Hi.", STUB_OLLAMA_RESPONSE='{"response":"x"}')
+        for tool, args, want in (("whisper-paste", [], "http://192.0.2.7:8093/inference"),
+                                 ("voice-train", ["Embry0"], "http://192.0.2.7:8093/inference"),
+                                 ("voice-rewrite-ollama", [], "http://192.0.2.7:11434/api/version"),
+                                 ("voice-agent-ollama", [], "http://192.0.2.7:11434/api/version")):
+            (Path(self.env["STUB_LOG"]) / "curl.log").unlink(missing_ok=True)
+            subprocess.run([str(BIN / tool), *args], input="hello", env=self.env, capture_output=True, text=True)
+            self.assertIn(want, log_lines(self.env, "curl")[0], tool)
+
+    def test_the_environment_wins_over_the_conf(self):
+        self.conf('OLLAMA_HOSTS="http://192.0.2.7:11434"\n')
+        self.env.update(OLLAMA_HOSTS="http://198.51.100.3:11434", STUB_OLLAMA_RESPONSE='{"response":"x"}')
+        subprocess.run([str(BIN / "voice-rewrite-ollama")], input="hello", env=self.env, capture_output=True, text=True)
+        self.assertIn("http://198.51.100.3:11434/api/version", log_lines(self.env, "curl")[0])
 
 
 class Style(unittest.TestCase):
