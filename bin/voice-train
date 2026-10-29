@@ -10,7 +10,7 @@
 #
 # Usage:
 #   voice-train                 # train every term in vocabulary.txt
-#   voice-train Embry0 Corvin   # train specific terms (added to vocab)
+#   voice-train PyTorch Nginx   # train specific terms (added to vocab)
 #   voice-train distill         # rebuild substitutions.tsv from the
 #                               # corrections journal (voice-correct)
 #   voice-train status          # what's learned so far
@@ -51,8 +51,9 @@ transcribe_raw() {  # $1 = wav path → prints transcript
     if [ "$served" = "0" ] && command -v whisper-cli >/dev/null 2>&1; then
         local model="${VOICE_PASTE_MODEL_PATH:-$DATA_DIR/models/ggml-${VOICE_PASTE_MODEL:-base.en}.bin}"
         # -ng = CPU only. Without it whisper-cli defaults to Vulkan device
-        # 0, which on Sun is the iGPU that drives the displays — sustained
-        # inference there hangs i915 and freezes the desktop.
+        # 0, which on a hybrid-GPU machine is the iGPU that drives the
+        # displays — sustained inference there hangs i915 and freezes the
+        # desktop.
         out=$(whisper-cli -m "$model" -f "$wav" -l en -ng -nt -np 2>/dev/null || true)
     fi
     printf '%s' "$out" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/[[:space:]]\+/ /g'

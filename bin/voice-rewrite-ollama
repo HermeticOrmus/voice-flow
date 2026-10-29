@@ -11,7 +11,7 @@
 # Configuration (env):
 #   OLLAMA_HOST            single base URL — overrides the host probe
 #   OLLAMA_HOSTS           space-separated URLs, first reachable wins
-#                          (default: sg HQ LAN, then sg Tailscale)
+#                          (default: this machine, http://127.0.0.1:11434)
 #   VOICE_REWRITE_MODEL    ollama model tag (default qwen3:32b)
 #   VOICE_REWRITE_TIMEOUT  floor of the curl --max-time in seconds (default
 #                          15); the wait grows by a second per 100 characters
@@ -22,10 +22,11 @@ set -euo pipefail
 INPUT=$(cat)
 [ -n "$INPUT" ] || { exit 0; }
 
-MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # resident on sg GPU 0 (Ollama's lane)
+MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # kept resident on the GPU
 # The wait grows with the transcript: the floor plus a second per 100
-# characters. qwen3:32b on sg writes about 67 tokens a second; a 1.1k
-# character rant came back in 3 s warm. A cold load adds a few seconds.
+# characters. qwen3:32b on a GPU server writes about 67 tokens a second;
+# a 1.1k character rant came back in 3 s warm. A cold load adds a few
+# seconds.
 TIMEOUT=$(( ${VOICE_REWRITE_TIMEOUT:-15} + ${#INPUT} / 100 ))
 
 # Host resolution: explicit OLLAMA_HOST wins; otherwise probe OLLAMA_HOSTS (voice-flow.conf or the
@@ -53,7 +54,7 @@ fi
 # No host reachable → pass input through untouched.
 [ -n "$HOST" ] || { echo "$INPUT"; exit 0; }
 
-# sg has the VRAM. Keep the cleanup model resident.
+# The GPU has the VRAM. Keep the cleanup model resident.
 KEEP_ALIVE="-1"
 
 # Prompt architecture: the transcript arrives between <transcript> tags
@@ -110,7 +111,7 @@ STYLE: Prompt. The speaker dictates instructions to a coding agent. Write the pr
 Examples of this style:
 \"Um, and I think that... likely... there's an option... in the... yeah, I don't know. I think I'll let you figure out what the best way is.\" → \"I'll let you figure out what the best way is.\"
 \"just look at the cargo output and fix it. Actually no, don't fix it, just tell me what's wrong\" → \"Just look at the cargo output and tell me what's wrong.\"
-\"the deploy on sg, like, the sg box, um, fails\" → \"The deploy on sg fails.\""
+\"the deploy on prod, like, the prod box, um, fails\" → \"The deploy on prod fails.\""
         ;;
 esac
 

@@ -174,7 +174,7 @@ mod tests {
     fn backend_names() {
         let hs = hosts(&conf(&[("VOICE_HOST_NAMES", "127.0.0.1:8093=desk")]));
         assert_eq!(backend_label("remote 127.0.0.1:8093", &hs), "desk");
-        assert_eq!(backend_label("remote 10.0.0.9:8093", &hs), "10.0.0.9:8093");
+        assert_eq!(backend_label("remote 198.51.100.9:8093", &hs), "198.51.100.9:8093");
         assert_eq!(backend_label("local base.en", &hs), "local fallback (base.en)");
         assert_eq!(backend_label("", &hs), "—");
     }

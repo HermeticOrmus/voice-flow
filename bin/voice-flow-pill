@@ -63,7 +63,7 @@ if os.environ.get("_VFP_PRELOADED") != "1":
 
 # --- the desktop theme --------------------------------------------------
 # Omarchy keeps the current theme at $XDG_STATE_HOME/omarchy/current/theme/
-# colors.toml (Ormus Sun on Sun). The pill draws with seven roles; a role
+# colors.toml. The pill draws with seven roles; a role
 # takes the first theme key that exists, else the built-in Ormus value.
 # While listening the bars are the accent: the one gold thing on screen.
 _BUILTIN = {

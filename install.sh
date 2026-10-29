@@ -15,7 +15,7 @@ for f in voice-flow whisper-paste voice-flow-pill voice-flow-web vibecoding-reco
 done
 
 # voice-ideas (the listener): its own link and its user unit, installed but never enabled.
-# Start it with `systemctl --user start voice-ideas` or from the Sun board.
+# Start it with `systemctl --user start voice-ideas`.
 ln -sf "$HERE/bin/voice-ideas" "$BIN/voice-ideas"
 chmod +x "$HERE/bin/voice-ideas"
 mkdir -p "$HOME/.config/systemd/user"

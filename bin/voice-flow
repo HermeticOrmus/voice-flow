@@ -113,7 +113,7 @@ hypr_active_class() {
 
 # The focused window's class decides the paste chord and its name. A new
 # terminal app-id goes here.
-# org.ormus.workboard.<session>: the Sun board's sg workboard windows (foot).
+# org.ormus.workboard.<session>: workboard windows (foot) that show a remote machine's session.
 terminal_class() {  # $1 = window class
     case "$1" in
       foot|kitty|Alacritty|com.mitchellh.ghostty|org.wezfurlong.wezterm|org.gnome.Terminal|org.kde.konsole|org.omarchy.herdr|org.omarchy.terminal|org.ormus.workboard.*) return 0 ;;

@@ -70,14 +70,14 @@ class VoiceTrain(unittest.TestCase):
 
     def test_an_answering_host_that_hears_nothing_is_final(self):
         self.env["STUB_CURL_OUT"] = ""
-        r = subprocess.run([str(BIN / "voice-train"), "Embry0"], env=self.env, capture_output=True, text=True)
+        r = subprocess.run([str(BIN / "voice-train"), "PyTorch"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("heard nothing", r.stdout)
         self.assertEqual(log_lines(self.env, "whisper-cli"), [])
 
     def test_local_fallback_is_cpu_only(self):
         self.env["STUB_CURL_EXIT"] = "7"
-        subprocess.run([str(BIN / "voice-train"), "Embry0"], env=self.env, capture_output=True, text=True)
+        subprocess.run([str(BIN / "voice-train"), "PyTorch"], env=self.env, capture_output=True, text=True)
         calls = log_lines(self.env, "whisper-cli")
         self.assertEqual(len(calls), 1)
         self.assertIn(" -ng ", " " + calls[0] + " ")
@@ -105,14 +105,14 @@ class Hosts(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_whisper_paste_asks_sun_first(self):
+    def test_whisper_paste_asks_this_machine_first(self):
         self.env.update(VOICE_PASTE_PHASE="stop", STUB_CURL_OUT="Hi.")
         subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
         self.assertIn("http://127.0.0.1:8093/inference", log_lines(self.env, "curl")[0])
 
-    def test_voice_train_asks_sun_first(self):
+    def test_voice_train_asks_this_machine_first(self):
         self.env["STUB_CURL_OUT"] = "Hi."
-        subprocess.run([str(BIN / "voice-train"), "Embry0"], env=self.env, capture_output=True, text=True)
+        subprocess.run([str(BIN / "voice-train"), "PyTorch"], env=self.env, capture_output=True, text=True)
         self.assertIn("http://127.0.0.1:8093/inference", log_lines(self.env, "curl")[0])
 
     def test_rewrite_runs_qwen_on_this_machine_by_default(self):
@@ -149,7 +149,7 @@ class Hosts(unittest.TestCase):
                   'OLLAMA_HOSTS="http://192.0.2.7:11434"\n')
         self.env.update(VOICE_PASTE_PHASE="stop", STUB_CURL_OUT="Hi.", STUB_OLLAMA_RESPONSE='{"response":"x"}')
         for tool, args, want in (("whisper-paste", [], "http://192.0.2.7:8093/inference"),
-                                 ("voice-train", ["Embry0"], "http://192.0.2.7:8093/inference"),
+                                 ("voice-train", ["PyTorch"], "http://192.0.2.7:8093/inference"),
                                  ("voice-rewrite-ollama", [], "http://192.0.2.7:11434/api/version"),
                                  ("voice-agent-ollama", [], "http://192.0.2.7:11434/api/version")):
             (Path(self.env["STUB_LOG"]) / "curl.log").unlink(missing_ok=True)

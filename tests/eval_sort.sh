@@ -4,14 +4,14 @@
 #
 #   burst 1 = the 20:03 ramble that asked for this system ("speak into the mic ... sunboard ...
 #             copy and paste"). PASS when at least one note targets the agent named
-#             "Voice idea capture dashboard" (this session on Sun) and the note keeps his words:
+#             "Voice idea capture dashboard" (this session) and the note keeps his words:
 #             it contains "mic", "sun board" or "sunboard", and "copy".
-#   burst 2 = the 19:xx note "the sun board right now tells me that nothing is running ... stuff
-#             running on multiple of the SG sessions". PASS when its note targets an agent whose
-#             name matches /voice idea capture|sun board/i, or has no target with a why that
-#             mentions the board.
+#   burst 2 = the 19:xx note "the sun board right now tells me that nothing is running ...": the
+#             board shows nothing while agents run on a remote machine. PASS when its note
+#             targets an agent whose name matches /voice idea capture|sun board/i, or has no
+#             target with a why that mentions the board.
 #
-# Needs sg (Ollama) and the Sun board on 127.0.0.1:7741. Writes nothing to the real notes file.
+# Needs Ollama (OLLAMA_HOSTS) and the agent board on 127.0.0.1:7741. Writes nothing to the real notes file.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 H=~/.local/share/ormus-voice/history.jsonl

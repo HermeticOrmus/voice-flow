@@ -234,9 +234,9 @@ mod tests {
     fn vocab_round_trip_splits_commas() {
         let root = dir();
         let path = root.join("vocabulary.txt");
-        fs::write(&path, "# keep\nOrmus, Hermetic Ormus\nEmbry0\n").unwrap();
+        fs::write(&path, "# keep\nOrmus, Hermetic Ormus\nPyTorch\n").unwrap();
         let terms = load_vocab(&path);
-        assert_eq!(terms, vec!["Ormus", "Hermetic Ormus", "Embry0"]);
+        assert_eq!(terms, vec!["Ormus", "Hermetic Ormus", "PyTorch"]);
         save_vocab(&path, &terms).unwrap();
         let saved = fs::read_to_string(&path).unwrap();
         assert!(saved.starts_with("# Ormus Voice vocabulary"));
@@ -249,17 +249,17 @@ mod tests {
     fn substitutions_round_trip() {
         let root = dir();
         let path = root.join("substitutions.tsv");
-        fs::write(&path, "# note\nembryo zero\tEmbry0\n\n").unwrap();
+        fs::write(&path, "# note\npie torch\tPyTorch\n\n").unwrap();
         let rows = load_substitutions(&path);
         assert_eq!(
             rows,
             vec![Substitution {
-                heard: "embryo zero".into(),
-                canonical: "Embry0".into(),
+                heard: "pie torch".into(),
+                canonical: "PyTorch".into(),
             }]
         );
         save_substitutions(&path, &rows).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "embryo zero\tEmbry0\n");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "pie torch\tPyTorch\n");
         let _ = fs::remove_dir_all(root);
     }
 

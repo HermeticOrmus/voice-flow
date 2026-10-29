@@ -39,8 +39,8 @@
 #   VOICE_PASTE_REMOTE       "on" (default) try remote whisper-server
 #                            first, "off" local-only
 #   VOICE_PASTE_REMOTE_HOSTS space-separated host:port list, first
-#                            reachable wins (default: mars via
-#                            TB → HQ LAN → Tailscale)
+#                            reachable wins (default: this
+#                            machine, 127.0.0.1:8093)
 #   VOICE_PASTE_REMOTE_TIMEOUT  floor of the curl --max-time for remote
 #                            inference (default 6; connect probe is
 #                            0.4s/host). The wait grows by a tenth of the
@@ -206,10 +206,10 @@ transcribe_and_paste() {
     local backend_state="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/backend.state"
     local trimmed="" host remote_served=0 logprob=""
     # The wait grows with the take: the floor plus a tenth of the audio's
-    # seconds (Sun's large-v3-turbo did a 120 s take in 4 s). A fixed 6 s
-    # would cut every take over about two minutes at the first host and
-    # send it down the failover chain. Seconds come from the WAV header:
-    # (bytes - 44) / byte-rate; an odd header reads as 0 (floor only).
+    # seconds (large-v3-turbo on a desktop GPU did a 120 s take in 4 s).
+    # A fixed 6 s would cut every take over about two minutes at the first
+    # host and send it down the failover chain. Seconds come from the WAV
+    # header: (bytes - 44) / byte-rate; an odd header reads as 0 (floor only).
     local wait_s rate size secs=0
     rate=$(od -An -tu4 -j28 -N4 "$wav" 2>/dev/null | tr -d ' ')
     size=$(stat -c %s "$wav" 2>/dev/null || echo 0)

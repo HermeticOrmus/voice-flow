@@ -12,7 +12,7 @@
 # built by `voice-train` (from live enrollment) and `voice-train
 # distill` (from the voice-correct corrections journal). Matching is
 # case-insensitive on word boundaries, longest phrase first, so
-# "embryo zero dashboard" wins over "embryo zero".
+# "pie torch lightning" wins over "pie torch".
 import os
 import re
 import sys

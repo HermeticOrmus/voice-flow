@@ -295,7 +295,7 @@ padding:6px 10px;font-size:12px;display:none;z-index:9}
 .pair{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 a{color:var(--gold)}
 </style></head><body data-palette="#E0B258">
-<h1>ORMUS VOICE <small>voice.ormus.solutions · served from Sun · nothing leaves your machines</small></h1>
+<h1>ORMUS VOICE <small>served from this machine · nothing leaves your machines</small></h1>
 
 <h2>Today</h2>
 <div class="row" id="tiles"></div>

@@ -11,15 +11,16 @@
 
 A burst = utterances less than 20 s apart: one train of thought. When it closes, the model splits
 it into separate ideas, cleans the words (fillers out, nothing paraphrased, the language kept) and
-picks for each the one agent it belongs to, from the rows the Sun board shows (Sun's herdr and sg's
-workboards), or none. Each note is one line of ~/.local/share/ormus-voice/ideas/notes.jsonl.
+picks for each the one agent it belongs to, from the rows the agent board shows (this machine's
+herdr and a remote machine's workboards), or none. Each note is one line of
+~/.local/share/ormus-voice/ideas/notes.jsonl.
 
-The model is local by default (Ollama on sg, JSON mode, no thinking); the Claude switch is one conf
+The model is local by default (Ollama, JSON mode, no thinking); the Claude switch is one conf
 line. No model, no board, bad JSON: the burst still lands as one raw note with no target.
 
 Conf (env wins over ~/.config/ormus-voice/voice-flow.conf):
   VOICE_IDEAS_SORTER        ollama (default) | claude
-  VOICE_IDEAS_MODEL         Ollama model tag (default qwen3.6:35b-a3b-q4_K_M, resident on sg)
+  VOICE_IDEAS_MODEL         Ollama model tag (default qwen3.6:35b-a3b-q4_K_M, kept resident)
   OLLAMA_HOSTS              base URLs, first that answers wins (default: this machine's Ollama)
   VOICE_IDEAS_CLAUDE_MODEL  default claude-haiku-4-5; key from ANTHROPIC_API_KEY, ANTHROPIC_API_KEY_FILE,
                             or ~/.credentials/anthropic/ormus
@@ -104,7 +105,8 @@ def closed(burst: list[dict], now: float, gap_s: float = BURST_GAP_S) -> bool:
 
 
 def targets_from(sun: dict | None, fleet: dict | None) -> list[dict]:
-    """The agent rows the board shows and can act on: Sun's herdr sessions and sg's workboards."""
+    """The agent rows the board shows and can act on: this machine's herdr sessions and the workboards
+    of TARGET_MACHINES."""
     rows = []
 
     def add(host: str, doc: dict | None) -> None:

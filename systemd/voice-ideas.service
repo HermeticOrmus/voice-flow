@@ -1,5 +1,5 @@
 [Unit]
-Description=voice-ideas: listen while gaming, one log line per utterance (ships dark: start it by hand or from the Sun board)
+Description=voice-ideas: listen while gaming, one log line per utterance (ships dark: start it by hand)
 After=pipewire.service wireplumber.service
 PartOf=graphical-session.target
 
