@@ -59,6 +59,18 @@ class WhisperPaste(unittest.TestCase):
         self.assertIn(" -ng ", " " + calls[0] + " ")
         self.assertNotIn("-dev", calls[0])
 
+    def test_a_failing_local_whisper_ends_the_take_cleanly(self):
+        """No host served and whisper-cli failed: the take ends as empty, with its reason and no temp file left."""
+        scratch = self.tmp / "scratch"
+        scratch.mkdir()
+        (self.tmp / "stubs" / "whisper-cli").write_text("#!/usr/bin/env bash\nexit 127\n")
+        self.env.update(STUB_CURL_EXIT="7", TMPDIR=str(scratch))
+        r = self.stop()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual((self.tmp / "run" / "ormus-voice" / "last-drop").read_text(), "empty")
+        self.assertEqual(sorted(p.name for p in scratch.iterdir()), [])
+
 
 class VoiceTrain(unittest.TestCase):
     def setUp(self):
