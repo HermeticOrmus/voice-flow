@@ -288,8 +288,10 @@ transcribe_and_paste() {
             whisper_args+=(--prompt "$VOCAB" --carry-initial-prompt)
         fi
 
+        # A failing whisper-cli (a missing library, a bad model) is an empty transcript: under
+        # set -e it would end the take here with no reason and leave the temp WAV behind.
         trimmed=$(whisper-cli "${whisper_args[@]}" 2>/dev/null \
-            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || trimmed=""
         printf 'local %s' "$MODEL_NAME" > "$backend_state" 2>/dev/null || true
     fi
 
