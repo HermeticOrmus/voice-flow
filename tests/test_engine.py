@@ -284,3 +284,77 @@ class TakeLength(unittest.TestCase):
         calls = [c for c in log_lines(self.env, "curl") if "/inference" in c]
         self.assertEqual(len(calls), 1, calls)
         self.assertIn(" -m 36 ", " " + calls[0] + " ")  # 6 s floor + 300 s / 10
+
+
+FFMPEG_STUB = r'''#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG/ffmpeg.log"
+[ -n "${STUB_FFMPEG_EXIT:-}" ] && exit "$STUB_FFMPEG_EXIT"
+for last; do :; done
+printf 'OggS' > "$last"
+'''
+
+
+class Upload(unittest.TestCase):
+    """VOICE_PASTE_UPLOAD=opus sends the take to the whisper server as Opus, about a tenth of the
+    WAV, for a slow uplink. WAV stays the default, a failed encode sends the WAV, and the local
+    whisper-cli still reads the WAV."""
+
+    def setUp(self):
+        self.tmp = tmpdir()
+        self.scratch = self.tmp / "scratch"
+        self.scratch.mkdir()
+        self.env = make_env(self.tmp, VOICE_PASTE_QUIET="1", VOICE_PASTE_PHASE="stop", STUB_CURL_OUT="Hi.",
+                            TMPDIR=str(self.scratch))
+        ffmpeg = self.tmp / "stubs" / "ffmpeg"
+        ffmpeg.write_text(FFMPEG_STUB)
+        ffmpeg.chmod(0o755)
+        models = self.tmp / "data" / "ormus-voice" / "models"
+        models.mkdir(parents=True)
+        (models / "ggml-base.en.bin").write_bytes(b"model")
+        run = self.tmp / "run" / "ormus-voice"
+        run.mkdir(parents=True)
+        (run / "recording.state").write_text(f"{DEAD_PID}:{silent_wav(self.tmp / 'take.wav')}")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def uploaded(self) -> str:
+        r = subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = [c for c in log_lines(self.env, "curl") if "/inference" in c]
+        self.assertEqual(len(calls), 1, calls)
+        return calls[0]
+
+    def test_wav_is_the_default(self):
+        self.assertRegex(self.uploaded(), r"file=@\S+\.wav\b")
+        self.assertEqual(log_lines(self.env, "ffmpeg"), [])
+
+    def test_opus_sends_an_ogg(self):
+        self.env["VOICE_PASTE_UPLOAD"] = "opus"
+        self.assertRegex(self.uploaded(), r"file=@\S+\.ogg\b")
+        encode = log_lines(self.env, "ffmpeg")
+        self.assertEqual(len(encode), 1, encode)
+        self.assertIn("-c:a libopus", encode[0])
+        self.assertIn("-b:a 32k", encode[0])
+
+    def test_the_conf_turns_it_on(self):
+        d = self.tmp / "config" / "ormus-voice"
+        d.mkdir(parents=True)
+        (d / "voice-flow.conf").write_text('VOICE_PASTE_UPLOAD=opus\n')
+        self.assertRegex(self.uploaded(), r"file=@\S+\.ogg\b")
+
+    def test_a_failed_encode_sends_the_wav(self):
+        self.env.update(VOICE_PASTE_UPLOAD="opus", STUB_FFMPEG_EXIT="1")
+        self.assertRegex(self.uploaded(), r"file=@\S+\.wav\b")
+
+    def test_the_local_fallback_reads_the_wav(self):
+        self.env.update(VOICE_PASTE_UPLOAD="opus", STUB_CURL_EXIT="7")
+        subprocess.run([str(BIN / "whisper-paste")], env=self.env, capture_output=True, text=True)
+        calls = log_lines(self.env, "whisper-cli")
+        self.assertEqual(len(calls), 1, calls)
+        self.assertRegex(calls[0], r" -f \S+\.wav ")
+
+    def test_no_encoded_file_is_left_behind(self):
+        self.env["VOICE_PASTE_UPLOAD"] = "opus"
+        self.uploaded()
+        self.assertEqual(sorted(p.name for p in self.scratch.iterdir()), [])
