@@ -45,6 +45,11 @@
 #                            inference (default 6; connect probe is
 #                            0.4s/host). The wait grows by a tenth of the
 #                            take's seconds on top of the floor.
+#   VOICE_PASTE_UPLOAD       "wav" (default) or "opus": the take goes to the
+#                            server as Opus 32 kbit/s, about a tenth of the
+#                            WAV, for a slow uplink. The server must decode
+#                            it (openai-whisper, faster-whisper; whisper.cpp
+#                            needs --convert). A failed encode sends the WAV.
 #   VOICE_PASTE_REWRITE_COMMAND  shell command to clean transcript via
 #                                an LLM. Reads stdin, prints stdout.
 #                                See voice-rewrite-claude / -ollama.
@@ -74,6 +79,8 @@ REMOTE=${VOICE_PASTE_REMOTE:-on}
 REMOTE_HOSTS=${VOICE_PASTE_REMOTE_HOSTS:-$(conf_value VOICE_PASTE_REMOTE_HOSTS)}
 REMOTE_HOSTS=${REMOTE_HOSTS:-127.0.0.1:8093}
 REMOTE_TIMEOUT=${VOICE_PASTE_REMOTE_TIMEOUT:-6}
+UPLOAD=${VOICE_PASTE_UPLOAD:-$(conf_value VOICE_PASTE_UPLOAD)}
+UPLOAD=${UPLOAD:-wav}
 
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/models"
 MODEL_PATH="${VOICE_PASTE_MODEL_PATH:-$DATA_DIR/ggml-${MODEL_NAME}.bin}"
@@ -193,7 +200,7 @@ transcribe_and_paste() {
     # Clean the raw capture (caller traps may also fire; harmless on missing file).
     rm -f "$original_wav" 2>/dev/null || true
     # Point everything downstream + our own cleanup at the tuned file.
-    trap 'rm -f "$cleaned" 2>/dev/null || true' RETURN
+    trap 'rm -f "$cleaned" "${cleaned%.wav}.ogg" 2>/dev/null || true' RETURN
     wav="$cleaned"
 
     local vocab_note=""
@@ -217,6 +224,16 @@ transcribe_and_paste() {
         secs=$(( (size - 44) / rate ))
     fi
     wait_s=$(( REMOTE_TIMEOUT + secs / 10 ))
+    # On a slow uplink the upload, not whisper, sets the wait: 446 KB of WAV for a 14 s take
+    # against 51 KB of Opus at 32 kbit/s, with no measured loss in words.
+    local upload="$wav"
+    if [ "$REMOTE" = "on" ] && [ "$UPLOAD" = "opus" ] && command -v ffmpeg >/dev/null 2>&1; then
+        local ogg="${wav%.wav}.ogg"
+        if ffmpeg -nostdin -loglevel error -y -i "$wav" -c:a libopus -b:a 32k -ac 1 \
+                -application voip "$ogg" 2>/dev/null && [ -s "$ogg" ]; then
+            upload="$ogg"
+        fi
+    fi
     if [ "$REMOTE" = "on" ]; then
         for host in $REMOTE_HOSTS; do
             note 30000 "✍️ Transcribing" "whisper-server @ $host$vocab_note…"
@@ -229,7 +246,7 @@ transcribe_and_paste() {
             # and a plain-text server is read as the text itself).
             local raw rc=0 text
             raw=$(curl -sSf --connect-timeout 0.4 -m "$wait_s" \
-                -F "file=@$wav" -F response_format=json \
+                -F "file=@$upload" -F response_format=json \
                 ${VOCAB:+-F "prompt=$VOCAB"} \
                 "http://$host/inference" 2>/dev/null) || rc=$?
             if [ "$rc" = "0" ]; then

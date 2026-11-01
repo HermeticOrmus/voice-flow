@@ -94,6 +94,7 @@ voice-flow tries `127.0.0.1:8093` first and falls back to `whisper-cli` when not
 |---|---|---|
 | `VOICE_PASTE_REMOTE_HOSTS` | `127.0.0.1:8093` | whisper servers, in order, first that answers wins |
 | `VOICE_HOST_NAMES` | none | names to show for them: `"192.0.2.7:8093=GPU box;127.0.0.1:8093=laptop"` |
+| `VOICE_PASTE_UPLOAD` | `wav` | `opus` sends the take as Opus 32 kbit/s (about a tenth of the WAV) for a slow uplink; the server must decode it |
 | `OLLAMA_HOSTS` | `http://127.0.0.1:11434` | Ollama servers for the cleanup, agent mode and voice-ideas |
 | `VOICE_PASTE_MODEL` | `medium.en` | the model `whisper-cli` uses when no server answers |
 | `VOICE_FLOW_METHOD` | `auto` | `auto`, `type` or `paste` |
@@ -103,6 +104,8 @@ voice-flow tries `127.0.0.1:8093` first and falls back to `whisper-cli` when not
 | `VOICE_FLOW_PILL` | `1` | the pill on screen |
 | `VOICE_FLOW_PARTIALS` | `1` | live words in the pill |
 | `VOICE_FLOW_LOG_TEXT` | `0` | `1` keeps transcript text in the local history |
+
+A GPU server over a slow uplink: set `VOICE_PASTE_UPLOAD=opus`. A 14 s take is 446 KB as WAV and 51 KB as Opus. openai-whisper and faster-whisper servers decode it; a whisper.cpp server needs `--convert`. If ffmpeg cannot encode, the WAV goes.
 
 Example for a GPU server on your LAN:
 
