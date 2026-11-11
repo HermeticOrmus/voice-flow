@@ -22,7 +22,10 @@ set -euo pipefail
 INPUT=$(cat)
 # voice-flow-api sets VOICE_REWRITE_STATUS_FILE: every path that hands the input back unrewritten
 # writes "failed" there, so the caller can tell "kept as is" from "the rewrite did not happen".
-passthrough() { [ -n "${VOICE_REWRITE_STATUS_FILE:-}" ] && printf failed > "$VOICE_REWRITE_STATUS_FILE" 2>/dev/null; echo "$INPUT"; exit 0; }
+passthrough() {
+    if [ -n "${VOICE_REWRITE_STATUS_FILE:-}" ]; then { printf failed > "$VOICE_REWRITE_STATUS_FILE"; } 2>/dev/null || true; fi
+    echo "$INPUT"; exit 0
+}
 [ -n "$INPUT" ] || { exit 0; }
 
 MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # kept resident on the GPU

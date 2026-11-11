@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -114,11 +115,37 @@ class Fail(Exception):
         self.status, self.kind, self.message = status, kind, message
 
 
+MAX_SECONDS = 1800   # a take is cut at 30 minutes: a small Opus file can decode to gigabytes
+
+
+def run_group(cmd, env=None, timeout=60):
+    """subprocess.run in its own process group: on a timeout the whole group dies (curl, ffmpeg,
+    the rewriter), so no grandchild keeps the pipes open or the work dir busy."""
+    p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False,
+                         start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
 def to_wav(src: Path, dst: Path) -> None:
     """Any accepted container -> 16 kHz mono PCM16 WAV. ffmpeg refusing it is the validity check."""
-    r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(src), "-vn",
-                        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(dst)],
-                       capture_output=True, timeout=120)
+    # The input format is forced from the Content-Type and only the file protocol is allowed: an
+    # unauthenticated upload must not make ffmpeg open a playlist's URLs or other local files.
+    fmt = {"wav": "wav", "ogg": "ogg", "mp4": "mov,mp4,m4a,3gp,3g2,mj2"}[src.suffix[1:]]
+    try:
+        r = run_group(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-protocol_whitelist", "file",
+                       "-f", fmt, "-i", str(src), "-vn", "-t", str(MAX_SECONDS), "-ac", "1", "-ar", "16000",
+                       "-c:a", "pcm_s16le", str(dst)], timeout=120)
+    except subprocess.TimeoutExpired:
+        raise Fail(400, "bad_audio", "decoding the audio took too long")
     if r.returncode != 0 or not dst.exists() or dst.stat().st_size <= 44:
         raise Fail(400, "bad_audio", "the audio could not be decoded")
 
@@ -148,8 +175,7 @@ def dictate(audio: bytes, ext: str, style: str) -> dict:
                                             or "voice-rewrite-ollama") if rewrite_on else "",
         })
         t0 = time.monotonic()
-        p = subprocess.run(["whisper-paste", "--file", str(wav)], env=env, capture_output=True,
-                           text=True, timeout=600)
+        p = run_group(["whisper-paste", "--file", str(wav)], env=env, timeout=600)
         total = int((time.monotonic() - t0) * 1000)
 
         def get(name: str) -> str:
@@ -160,7 +186,7 @@ def dictate(audio: bytes, ext: str, style: str) -> dict:
 
         if p.returncode != 0:
             raise Fail(502, "no_engine", "the engine failed")
-        text = p.stdout.strip()
+        text = p.stdout.decode(errors='replace').strip()
         used = get("engine") or engine
         raw = get("raw")
         out: dict = {"text": text, "raw": raw, "style": style, "engine": used,
@@ -172,19 +198,23 @@ def dictate(audio: bytes, ext: str, style: str) -> dict:
         except (OSError, IndexError):
             pass
         if not text and drop:
-            if drop == "empty" and used == "local":
+            if drop == "empty" and get("fellback"):
                 raise Fail(503, "no_engine", "no whisper host answered during the take")
             out["dropped"] = drop
         elif rewrite_on and (get("rewrite") == "failed" or get("rewrite_status") == "failed"):
             out["rewrite"] = "failed"
-        history_log(style, out, total, rewrite_on)
+        history_log(style, out, total, rewrite_on and out.get("rewrite") != "failed" and not drop)
         return out
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
+BUSY = threading.BoundedSemaphore(int(os.environ.get("VOICE_FLOW_API_PARALLEL") or 2))
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "voice-flow-api"
+    timeout = 30   # a client that stalls mid-upload frees its thread
 
     def log_message(self, fmt, *args):  # no per-request lines: they could carry a query, never text
         pass
@@ -224,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
                 n = int(self.headers.get("Content-Length") or "")
             except ValueError:
                 raise Fail(411, "bad_audio", "Content-Length is required")
-            limit = int(conf_value("VOICE_FLOW_API_MAX_BYTES") or 60 * 1024 * 1024)
+            limit = self.server.max_bytes
             if n > limit:
                 self.close_connection = True
                 raise Fail(413, "too_large", f"the upload is over {limit} bytes")
@@ -233,7 +263,12 @@ class Handler(BaseHTTPRequestHandler):
             audio = self.rfile.read(n)
             if len(audio) != n:
                 raise Fail(400, "bad_audio", "the body ended early")
-            self.send(200, dictate(audio, TYPES[ctype], style))
+            if not BUSY.acquire(blocking=False):
+                raise Fail(503, "busy", "two takes are already being transcribed; retry")
+            try:
+                self.send(200, dictate(audio, TYPES[ctype], style))
+            finally:
+                BUSY.release()
         except Fail as f:
             self.err(f.status, f.kind, f.message)
         except subprocess.TimeoutExpired:
@@ -245,7 +280,14 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     port = int(conf_value("VOICE_FLOW_API_PORT") or 8097)
     addrs = (conf_value("VOICE_FLOW_API_BIND") or "127.0.0.1").split()
+    try:
+        max_bytes = int(conf_value("VOICE_FLOW_API_MAX_BYTES") or 60 * 1024 * 1024)
+    except ValueError:
+        print("voice-flow-api: VOICE_FLOW_API_MAX_BYTES is not a number", file=sys.stderr)
+        return 2
     servers = [ThreadingHTTPServer((a, port), Handler) for a in addrs]
+    for s in servers:
+        s.max_bytes = max_bytes
     for s in servers[1:]:
         threading.Thread(target=s.serve_forever, daemon=True).start()
     print(f"voice-flow-api on {', '.join(f'{a}:{port}' for a in addrs)} "

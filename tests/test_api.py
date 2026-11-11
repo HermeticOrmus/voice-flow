@@ -48,6 +48,7 @@ class Fake(http.server.ThreadingHTTPServer):
     def __init__(self, whisper_reply: dict, ollama_reply: str | None = "Cleaned text."):
         self.whisper_reply, self.ollama_reply = whisper_reply, ollama_reply
         self.generate_calls = 0
+        self.delay = 0.0
         outer = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -67,6 +68,7 @@ class Fake(http.server.ThreadingHTTPServer):
                 n = int(self.headers.get("Content-Length") or 0)
                 self.rfile.read(n)
                 if self.path.startswith("/inference"):
+                    time.sleep(outer.delay)
                     return self.reply(json.dumps(outer.whisper_reply).encode())
                 outer.generate_calls += 1
                 if outer.ollama_reply is None:
@@ -225,6 +227,36 @@ class Api(unittest.TestCase):
         self.start(VOICE_FLOW_LOG_TEXT="1")
         self.call("POST", "/v1/dictate", self.wav(), "audio/wav")
         self.assertEqual(self.history()[0]["text"], "Cleaned text.")
+
+    def test_super_h_files_are_untouched(self):
+        self.start()
+        self.call("POST", "/v1/dictate", self.wav(), "audio/wav")
+        ov = self.tmp / "data" / "ormus-voice"
+        self.assertFalse((ov / "last-paste.txt").exists())
+        self.assertFalse((ov / "backend.state").exists())
+        self.assertNotIn(b"Cleaned", b"".join(p.read_bytes() for p in ov.rglob("*") if p.is_file()))
+
+    def test_a_playlist_is_not_followed(self):
+        self.start()
+        evil = b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nfile:///etc/hostname\n"
+        code, body = self.call("POST", "/v1/dictate", evil, "audio/wav")
+        self.assertEqual((code, body["error"]), (400, "bad_audio"))
+
+    def test_busy_when_the_parallel_limit_is_reached(self):
+        self.start(VOICE_FLOW_API_PARALLEL="1")
+        self.fake.delay = 1.5
+        first = threading.Thread(target=lambda: self.call("POST", "/v1/dictate?style=verbatim", self.wav(), "audio/wav"))
+        first.start()
+        time.sleep(0.6)
+        code, body = self.call("POST", "/v1/dictate?style=verbatim", self.wav(), "audio/wav")
+        first.join()
+        self.assertEqual((code, body["error"]), (503, "busy"))
+
+    def test_a_bad_max_bytes_stops_the_server_at_start(self):
+        env = dict(os.environ, VOICE_FLOW_API_MAX_BYTES="lots", VOICE_FLOW_API_PORT=str(free_port()),
+                   VOICE_FLOW_CONF=str(self.tmp / "none.conf"))
+        r = subprocess.run([sys.executable, str(BIN / "voice-flow-api")], env=env, capture_output=True, timeout=10)
+        self.assertEqual(r.returncode, 2)
 
     def test_super_h_runtime_dir_is_untouched(self):
         self.start()

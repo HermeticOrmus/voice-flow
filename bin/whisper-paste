@@ -219,6 +219,9 @@ transcribe_and_paste() {
     # backend.state tells the dashboard which engine served the last
     # dictation (runtime dir — it resets on reboot, like the rest).
     local backend_state="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/backend.state"
+    # A voice-flow-api take must not touch Super+H's files: no backend.state, no last-paste.txt.
+    local last_paste="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+    if [ -n "${VOICE_PASTE_REPORT_DIR:-}" ]; then backend_state=/dev/null; last_paste=/dev/null; fi
     local trimmed="" host remote_served=0 logprob="" t_start
     t_start=$(now_ms)
     # The wait grows with the take: the floor plus a tenth of the audio's
@@ -279,6 +282,7 @@ transcribe_and_paste() {
     # Local fallback: whisper-cli, cold-start per call. Only when no remote
     # host answered at all — never merely because the transcript was empty.
     if [ "$remote_served" = "0" ]; then
+        rep fellback 1
         local backend_note gpu_flags
         if [ "$GPU" = "1" ]; then
             backend_note="GPU dev $GPU_DEVICE"
@@ -369,7 +373,7 @@ transcribe_and_paste() {
         if [ -n "$rewritten" ]; then
             note 3000 "✓ Pasted (rewritten)" "$(echo "$rewritten" | head -c 80)"
             clear_notify_state
-            echo -n "$rewritten" > "${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+            echo -n "$rewritten" > "$last_paste"
             echo "$rewritten"
             return 0
         fi
@@ -380,7 +384,7 @@ transcribe_and_paste() {
     note 3000 "✓ Pasted" "$(echo "$trimmed" | head -c 80)"
     clear_notify_state
     # Persist the last paste for voice-correct to diff against later.
-    echo -n "$trimmed" > "${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+    echo -n "$trimmed" > "$last_paste"
     echo "$trimmed"
 }
 
