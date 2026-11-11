@@ -111,6 +111,10 @@ NOTIFY_ID_FILE="$STATE_DIR/notify.id"
 # hallucination. voice-flow shows it in the pill's cancel state.
 DROP_FILE="$STATE_DIR/last-drop"
 drop() { printf '%s' "$1" > "$DROP_FILE" 2>/dev/null || true; }
+# voice-flow-api sets VOICE_PASTE_REPORT_DIR: one small file per fact (raw, engine,
+# transcribe_ms, rewrite_ms, rewrite) for the caller to read. Unset = Super+H, nothing written.
+rep() { [ -n "${VOICE_PASTE_REPORT_DIR:-}" ] && printf '%s' "$2" > "$VOICE_PASTE_REPORT_DIR/$1" 2>/dev/null || true; }
+now_ms() { date +%s%3N; }
 
 # --- Notification helper -----------------------------------------------
 # Each note() call replaces the previous one in the same voice-paste
@@ -147,17 +151,21 @@ beep() {
 }
 
 # --- Preconditions ------------------------------------------------------
-if ! command -v arecord >/dev/null 2>&1; then
+# --file PATH: transcribe a finished take (voice-flow-api). No recorder, no local model needed;
+# the take is consumed (deleted) like a recording is.
+FILE_MODE=""
+if [ "${1:-}" = "--file" ]; then FILE_MODE="${2:?--file needs a path}"; fi
+if [ -z "$FILE_MODE" ] && ! command -v arecord >/dev/null 2>&1; then
     note 4000 "Voice paste failed" "arecord not installed (apt install alsa-utils)"
     clear_notify_state
     exit 1
 fi
-if ! command -v whisper-cli >/dev/null 2>&1; then
+if [ -z "$FILE_MODE" ] && ! command -v whisper-cli >/dev/null 2>&1; then
     note 4000 "Voice paste failed" "whisper-cli not in PATH"
     clear_notify_state
     exit 1
 fi
-if [ ! -f "$MODEL_PATH" ]; then
+if [ -z "$FILE_MODE" ] && [ ! -f "$MODEL_PATH" ]; then
     note 5000 "Voice paste failed" "model not found at $MODEL_PATH"
     clear_notify_state
     exit 1
@@ -211,7 +219,11 @@ transcribe_and_paste() {
     # backend.state tells the dashboard which engine served the last
     # dictation (runtime dir — it resets on reboot, like the rest).
     local backend_state="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/backend.state"
-    local trimmed="" host remote_served=0 logprob=""
+    # A voice-flow-api take must not touch Super+H's files: no backend.state, no last-paste.txt.
+    local last_paste="${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+    if [ -n "${VOICE_PASTE_REPORT_DIR:-}" ]; then backend_state=/dev/null; last_paste=/dev/null; fi
+    local trimmed="" host remote_served=0 logprob="" t_start
+    t_start=$(now_ms)
     # The wait grows with the take: the floor plus a tenth of the audio's
     # seconds (large-v3-turbo on a desktop GPU did a 120 s take in 4 s).
     # A fixed 6 s would cut every take over about two minutes at the first
@@ -260,6 +272,7 @@ transcribe_and_paste() {
                 fi
                 trimmed=$(printf '%s' "$text" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 remote_served=1
+                rep engine "$host"
                 printf 'remote %s' "$host" > "$backend_state" 2>/dev/null || true
                 break
             fi
@@ -269,6 +282,7 @@ transcribe_and_paste() {
     # Local fallback: whisper-cli, cold-start per call. Only when no remote
     # host answered at all — never merely because the transcript was empty.
     if [ "$remote_served" = "0" ]; then
+        rep fellback 1
         local backend_note gpu_flags
         if [ "$GPU" = "1" ]; then
             backend_note="GPU dev $GPU_DEVICE"
@@ -292,8 +306,11 @@ transcribe_and_paste() {
         # set -e it would end the take here with no reason and leave the temp WAV behind.
         trimmed=$(whisper-cli "${whisper_args[@]}" 2>/dev/null \
             | sed 's/^[[:space:]]*//;s/[[:space:]]*$//') || trimmed=""
+        rep engine local
         printf 'local %s' "$MODEL_NAME" > "$backend_state" 2>/dev/null || true
     fi
+    rep transcribe_ms "$(( $(now_ms) - t_start ))"
+    rep raw "$trimmed"
 
     if [ -z "$trimmed" ]; then
         note 2500 "🤫 Empty transcript" "whisper produced no text"
@@ -347,28 +364,36 @@ transcribe_and_paste() {
     # the term list).
     if [ -n "${VOICE_PASTE_REWRITE_COMMAND:-}" ]; then
         note 30000 "🪄 Cleaning up" "rewriting via LLM…"
-        local rewritten
+        local rewritten t_rw
+        t_rw=$(now_ms)
         rewritten=$(printf '%s' "$trimmed" | VOICE_REWRITE_VOCABULARY="$VOCAB" \
             $VOICE_PASTE_REWRITE_COMMAND 2>/dev/null || true)
+        rep rewrite_ms "$(( $(now_ms) - t_rw ))"
         rewritten=$(echo "$rewritten" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ -n "$rewritten" ]; then
             note 3000 "✓ Pasted (rewritten)" "$(echo "$rewritten" | head -c 80)"
             clear_notify_state
-            echo -n "$rewritten" > "${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+            echo -n "$rewritten" > "$last_paste"
             echo "$rewritten"
             return 0
         fi
+        rep rewrite failed
         note 2000 "⚠ Rewrite failed; raw paste" "${trimmed:0:60}"
     fi
 
     note 3000 "✓ Pasted" "$(echo "$trimmed" | head -c 80)"
     clear_notify_state
     # Persist the last paste for voice-correct to diff against later.
-    echo -n "$trimmed" > "${XDG_DATA_HOME:-$HOME/.local/share}/ormus-voice/last-paste.txt"
+    echo -n "$trimmed" > "$last_paste"
     echo "$trimmed"
 }
 
 # --- Mode dispatch ------------------------------------------------------
+
+if [ -n "$FILE_MODE" ]; then
+    transcribe_and_paste "$FILE_MODE"
+    exit 0
+fi
 
 PHASE="${VOICE_PASTE_PHASE:-}"
 

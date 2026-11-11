@@ -20,6 +20,12 @@
 set -euo pipefail
 
 INPUT=$(cat)
+# voice-flow-api sets VOICE_REWRITE_STATUS_FILE: every path that hands the input back unrewritten
+# writes "failed" there, so the caller can tell "kept as is" from "the rewrite did not happen".
+passthrough() {
+    if [ -n "${VOICE_REWRITE_STATUS_FILE:-}" ]; then { printf failed > "$VOICE_REWRITE_STATUS_FILE"; } 2>/dev/null || true; fi
+    echo "$INPUT"; exit 0
+}
 [ -n "$INPUT" ] || { exit 0; }
 
 MODEL="${VOICE_REWRITE_MODEL:-qwen3:32b}"   # kept resident on the GPU
@@ -52,7 +58,7 @@ else
     done
 fi
 # No host reachable → pass input through untouched.
-[ -n "$HOST" ] || { echo "$INPUT"; exit 0; }
+[ -n "$HOST" ] || { passthrough; }
 
 # The GPU has the VRAM. Keep the cleanup model resident.
 KEEP_ALIVE="-1"
@@ -181,8 +187,7 @@ fi
 
 CLEANED=$(echo "$RESP" | jq -r '.response // empty' 2>/dev/null)
 if [ -z "$CLEANED" ]; then
-    echo "$INPUT"
-    exit 0
+    passthrough
 fi
 
 # Strip echoed transcript tags (models sometimes preserve the wrapper
@@ -190,7 +195,7 @@ fi
 CLEANED=$(printf '%s' "$CLEANED" \
     | sed 's/<\/*transcript>//g' \
     | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-[ -n "$CLEANED" ] || { echo "$INPUT"; exit 0; }
+[ -n "$CLEANED" ] || { passthrough; }
 
 # Over-editing guard: a cleanup pass shrinks filler or converts spoken
 # forms — it never balloons or guts the text. If length moved outside
@@ -198,8 +203,7 @@ CLEANED=$(printf '%s' "$CLEANED" \
 IN_LEN=${#INPUT}
 OUT_LEN=${#CLEANED}
 if [ "$OUT_LEN" -gt $((IN_LEN * 5 / 2)) ] || [ "$OUT_LEN" -lt $((IN_LEN / 4)) ]; then
-    echo "$INPUT"
-    exit 0
+    passthrough
 fi
 
 echo "$CLEANED"

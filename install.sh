@@ -23,6 +23,14 @@ cp -n "$HERE/systemd/voice-ideas.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload 2>/dev/null || true
 echo "installed voice-ideas (unit present, not enabled)"
 
+# voice-flow-api (the dictation pipeline over HTTP): its link and user unit, installed but never
+# enabled. Bind addresses and port come from voice-flow.conf; see the header of bin/voice-flow-api.
+ln -sf "$HERE/bin/voice-flow-api" "$BIN/voice-flow-api"
+chmod +x "$HERE/bin/voice-flow-api"
+cp -n "$HERE/systemd/voice-flow-api.service" "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload 2>/dev/null || true
+echo "installed voice-flow-api (unit present, not enabled)"
+
 # Default per-app profiles — only if the user hasn't customized one.
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ormus-voice"
 mkdir -p "$CONF_DIR"

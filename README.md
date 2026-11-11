@@ -131,6 +131,7 @@ VOICE_HOST_NAMES="192.0.2.7:8093=GPU box"
 | `voice-flow-web` | A local analytics page on `127.0.0.1:7385`. Stdlib only, no outside requests. |
 | `voice-train`, `voice-substitute` | Train whisper on your words; apply learned fixes. |
 | `voice-rewrite-ollama`, `voice-rewrite-claude`, `voice-agent-ollama` | The cleanup and agent backends. |
+| `voice-flow-api` | The same pipeline over HTTP for a phone: `POST /v1/dictate?style=prompt` with audio, text back. No auth; see below. |
 | `voice-ideas`, `voice-ideas-sort` | The idle-thought listener and its sorter (below). |
 
 ## Training it on your words
@@ -174,6 +175,22 @@ After a pause, `voice-ideas-sort` splits a burst into separate notes with an Oll
 ./check.sh                                           # Python tests (uv supplies the packages)
 (cd panel && cargo test --release && cargo clippy --release)
 ```
+
+## voice-flow-api
+
+`voice-flow-api` runs the dictation pipeline on a take a phone uploads, minus the typing: it calls `whisper-paste --file`, so the server list, junk gate, learned corrections and Express rewrite are the ones the key uses. Stdlib Python, ships dark (`systemctl --user enable --now voice-flow-api`).
+
+```bash
+curl http://127.0.0.1:8097/v1/health
+curl -X POST 'http://127.0.0.1:8097/v1/dictate?style=casual' -H 'Content-Type: audio/wav' --data-binary @take.wav
+```
+
+- Audio: `audio/wav`, `audio/ogg` (Opus) or `audio/mp4` (AAC), up to 60 MB; ffmpeg turns it into 16 kHz mono.
+- Answer: `{"text","raw","style","engine","ms":{"transcribe","rewrite"}}`. A junk take is 200 with `"text":""` and `"dropped":"junk"`. A failed rewrite is 200 with the substituted text and `"rewrite":"failed"`.
+- Errors: `{"error":"bad_audio|too_large|no_engine|bad_request","message"}`.
+- Config in `voice-flow.conf`: `VOICE_FLOW_API_BIND` (space-separated addresses, default `127.0.0.1`) and `VOICE_FLOW_API_PORT` (default 8097).
+- There is no authentication. Anyone who reaches a bound address can dictate through your engine. Bind loopback plus the address of a private network you trust, never a public one.
+- `history.jsonl` gets one counts-only line per request with `"method":"api"`; the text is logged only with `VOICE_FLOW_LOG_TEXT=1`.
 
 ## Feedback
 
