@@ -52,6 +52,7 @@ class Inject(unittest.TestCase):
         dictate(self.env)
         self.assertIn(CTRL_SHIFT_V, log_lines(self.env, "ydotool"))
         self.assertNotIn(CTRL_V, log_lines(self.env, "ydotool"))
+        self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
 
     def test_browser_pastes_with_ctrl_v_and_rewrites(self):
         self.env["STUB_CLASS"] = "firefox"
