@@ -114,9 +114,10 @@ hypr_active_class() {
 # The focused window's class decides the paste chord and its name. A new
 # terminal app-id goes here.
 # org.ormus.workboard.<session>: workboard windows (foot) that show a remote machine's session.
+# herdr-app: the Herdr desktop app binds Ctrl+V to image paste on Linux; text is Ctrl+Shift+V.
 terminal_class() {  # $1 = window class
     case "$1" in
-      foot|kitty|Alacritty|com.mitchellh.ghostty|org.wezfurlong.wezterm|org.gnome.Terminal|org.kde.konsole|org.omarchy.herdr|org.omarchy.terminal|org.ormus.workboard.*) return 0 ;;
+      foot|kitty|Alacritty|com.mitchellh.ghostty|org.wezfurlong.wezterm|org.gnome.Terminal|org.kde.konsole|herdr-app|org.omarchy.herdr|org.omarchy.terminal|org.ormus.workboard.*) return 0 ;;
       *) return 1 ;;
     esac
 }
