@@ -46,6 +46,13 @@ class Inject(unittest.TestCase):
         self.assertIn(CTRL_SHIFT_V, log_lines(self.env, "ydotool"))
         self.assertEqual(read_log_file(self.env, "rewrite_cmd.txt"), "voice-rewrite-ollama")
 
+    def test_herdr_app_pastes_with_ctrl_shift_v(self):
+        # Herdr app binds Ctrl+V to terminal.paste_image on Linux: text needs Ctrl+Shift+V.
+        self.env["STUB_CLASS"] = "herdr-app"
+        dictate(self.env)
+        self.assertIn(CTRL_SHIFT_V, log_lines(self.env, "ydotool"))
+        self.assertNotIn(CTRL_V, log_lines(self.env, "ydotool"))
+
     def test_browser_pastes_with_ctrl_v_and_rewrites(self):
         self.env["STUB_CLASS"] = "firefox"
         dictate(self.env)
