@@ -1,0 +1,15 @@
+[package]
+name = "vf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "voice-flow command: the toggle that bin/voice-flow is today"
+
+[dependencies]
+vf-core = { path = "../vf-core" }
+vf-inject = { path = "../vf-inject" }
+libc.workspace = true
+
+[[bin]]
+name = "vf"
+path = "src/main.rs"

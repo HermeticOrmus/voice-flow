@@ -1,0 +1,10 @@
+[package]
+name = "vf-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "voice-flow pure logic: conf, substitutions, junk filters, Express prompts, history rows, app profiles"
+
+[dependencies]
+serde_json.workspace = true
+regex.workspace = true

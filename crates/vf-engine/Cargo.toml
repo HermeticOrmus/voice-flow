@@ -1,0 +1,23 @@
+[package]
+name = "vf-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "voice-flow engine: capture, silence gate, upload, whisper host failover, junk gate, rewrite"
+
+[dependencies]
+vf-core = { path = "../vf-core" }
+serde_json.workspace = true
+libc.workspace = true
+
+[[bin]]
+name = "vf-whisper-paste"
+path = "src/bin/whisper_paste.rs"
+
+[[bin]]
+name = "vf-rewrite-ollama"
+path = "src/bin/rewrite_ollama.rs"
+
+[[bin]]
+name = "vf-substitute"
+path = "src/bin/substitute.rs"

@@ -1,0 +1,10 @@
+[package]
+name = "vf-inject"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "voice-flow injection: focus guard through hyprctl, ydotool typing, clipboard paste with restore"
+
+[dependencies]
+vf-core = { path = "../vf-core" }
+serde_json.workspace = true

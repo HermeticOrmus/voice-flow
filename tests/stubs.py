@@ -9,13 +9,43 @@ arguments to <log>/<name>.log so a test can read what was called with what.
 """
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import stat
 import tempfile
 import wave
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-BIN = REPO / "bin"
+
+# The one switch: VF_IMPL=rust runs the same tests against the Rust binaries (cargo build first;
+# VF_TARGET_DIR overrides target/debug). BIN is then a folder of links: the ported scripts point at
+# their Rust binary, every other script at its own file in bin/. Without the switch BIN is bin/.
+RUST_BINARIES = {
+    "voice-flow": "vf",
+    "whisper-paste": "vf-whisper-paste",
+    "voice-rewrite-ollama": "vf-rewrite-ollama",
+    "voice-substitute": "vf-substitute",
+}
+
+
+def _rust_bin_dir() -> Path:
+    target = Path(os.environ.get("VF_TARGET_DIR", REPO / "target" / "debug"))
+    folder = Path(tempfile.mkdtemp(prefix="voice-flow-rust-bin-"))
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    for script in (REPO / "bin").iterdir():
+        (folder / script.name).symlink_to(script)
+    for name, binary in RUST_BINARIES.items():
+        built = target / binary
+        if not built.exists():
+            raise SystemExit(f"VF_IMPL=rust: {built} is missing; run cargo build --workspace")
+        (folder / name).unlink()
+        (folder / name).symlink_to(built)
+    return folder
+
+
+BIN = _rust_bin_dir() if os.environ.get("VF_IMPL") == "rust" else REPO / "bin"
 
 # A pid that never exists on Linux (pid_max is 4194304), so `kill -0`
 # fails and the stop phase never signals a real process.
@@ -35,7 +65,9 @@ printf '{"address":"%s","class":"%s","fullscreen":0}\n' "$addr" "${STUB_CLASS:-f
          printf '%s' "${VOICE_PASTE_REWRITE_COMMAND-unset}" > "$STUB_LOG/rewrite_cmd.txt"
          printf '%s' "${STUB_TEXT:-}" ;;
 esac''',
-    "curl": r'''if [ -n "${STUB_CURL_EXIT:-}" ]; then exit "$STUB_CURL_EXIT"; fi
+    # A request body on stdin (--data-binary @-) lands in the same log as the arguments.
+    "curl": r'''case "$*" in *" @-"*) cat >> "$STUB_LOG/curl.log" ;; esac
+if [ -n "${STUB_CURL_EXIT:-}" ]; then exit "$STUB_CURL_EXIT"; fi
 case "$*" in
   *api/version*)  printf '{"version":"0.0"}' ;;
   *api/generate*) printf '%s' "${STUB_OLLAMA_RESPONSE:-}" ;;
