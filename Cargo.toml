@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+# The panel is a GTK4 app with its own lockfile; the COSMIC reader is dead on Hyprland.
+exclude = ["panel", "active-window"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+libc = "0.2"
